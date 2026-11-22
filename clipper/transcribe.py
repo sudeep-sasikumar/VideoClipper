@@ -117,6 +117,8 @@ def transcribe(audio: Path, out_json: Path, duration: float, model_name: str, re
     segments_iter, info = model.transcribe(
         samples,
         language=language or None,
+        language_detection_segments=6,  # intros are often music; don't decide from the first 30 s
+        language_detection_threshold=0.6,
         word_timestamps=True,
         # VAD is fast but drops shouted/noisy gameplay speech, so it's a per-profile choice.
         vad_filter=vad,
