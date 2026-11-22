@@ -153,6 +153,7 @@ def write_reports(proj: dict) -> None:
             "hook_text": c.get("hook_text", ""), "title": c.get("title", ""), "reason": c.get("reason", ""),
             "voiceover": bool(c.get("voiceover")), "intro_line": c.get("intro_line", ""),
             "source_link": _link_at(v["url"], c["start"]),
+            **({"claude_suggested": [fmt_precise(x) for x in c["suggested"]]} if c.get("suggested") else {}),
             **({"error": c["error"]} if c.get("error") else {}),
         })
     report = {"video": {"title": v["title"], "url": v["url"], "duration": v["duration"]},

@@ -32,17 +32,21 @@ def extract_audio(video: Path, out_wav: Path, rep: Reporter) -> Path:
     return out_wav
 
 
-def load_wav_float(path: Path):
-    """16 kHz mono PCM -> float32 numpy (avoids PyAV, whose API drifts between versions)."""
+def load_wav_float(path: Path, start: float = 0.0, end: float | None = None):
+    """16 kHz mono PCM [start, end) seconds -> float32 numpy (avoids PyAV, whose API drifts)."""
     import wave
 
     import numpy as np
     with wave.open(str(path), "rb") as wf:
-        n = wf.getnframes()
+        sr = wf.getframerate()
+        first = int(start * sr)
+        last = wf.getnframes() if end is None else min(wf.getnframes(), int(end * sr))
+        wf.setpos(first)
+        n = max(0, last - first)
         out = np.empty(n, dtype=np.float32)
         pos = 0
         while pos < n:
-            raw = wf.readframes(16000 * 600)
+            raw = wf.readframes(min(16000 * 600, n - pos))
             if not raw:
                 break
             a = np.frombuffer(raw, dtype=np.int16)
@@ -113,44 +117,113 @@ def transcribe(audio: Path, out_json: Path, duration: float, model_name: str, re
     model, device = load_model(model_name, rep)
     rep.log("Transcribing (this is the slow part)...")
     t0 = time.monotonic()
-    samples = load_wav_float(audio)
-    segments_iter, info = model.transcribe(
-        samples,
-        language=language or None,
-        language_detection_segments=6,  # intros are often music; don't decide from the first 30 s
-        language_detection_threshold=0.6,
-        word_timestamps=True,
-        # VAD is fast but drops shouted/noisy gameplay speech, so it's a per-profile choice.
-        vad_filter=vad,
-        vad_parameters={"min_silence_duration_ms": 500} if vad else None,
-        hallucination_silence_threshold=None if vad else 2.0,
-        beam_size=5 if device == "cuda" else 1,
-        temperature=0.0 if device == "cpu" else [0.0, 0.2, 0.4],  # fallback retries are slow on CPU
-        condition_on_previous_text=False,
-    )
-    duration = duration or info.duration or 1.0
-    rep.log(f"Language: {info.language} ({info.language_probability:.0%}).")
-    segs = []
+    total = wav_seconds(audio)
+    duration = duration or total or 1.0
+    cuts = piece_bounds(audio, total)
+
+    # Resume: pieces already finished in an earlier (interrupted) run.
+    partial = out_json.with_suffix(".partial.json")
+    done = {}
+    if partial.exists():
+        try:
+            prev = json.loads(partial.read_text(encoding="utf-8"))
+            if prev.get("model") == model_name and prev.get("vad") == vad and prev.get("cuts") == cuts:
+                done = {int(k): v for k, v in prev["pieces"].items()}
+                language = language or prev.get("language")
+                if done:
+                    rep.log(f"Resuming transcription: {len(done)}/{len(cuts) - 1} pieces already done.")
+        except (ValueError, KeyError):
+            done = {}
+
+    lang = language or None
+    lang_prob = None
     last_log = 0.0
-    for seg in segments_iter:
+    resumed_s = sum(cuts[j + 1] - cuts[j] for j in done)  # audio finished before this run
+    for i in range(len(cuts) - 1):
+        a, b = cuts[i], cuts[i + 1]
+        if i in done:
+            continue
         rep.check()
-        words = [[round(float(w.start), 2), round(float(w.end), 2), w.word.strip()] for w in (seg.words or []) if w.word.strip()]
-        segs.append({"start": round(float(seg.start), 2), "end": round(float(seg.end), 2), "text": seg.text.strip(), "words": words})
-        frac = seg.end / duration
-        rep.progress("transcribe", frac)
-        now = time.monotonic()
-        if now - last_log > 60:
-            last_log = now
-            el = now - t0
-            eta = el / max(frac, 1e-3) - el
-            rep.log(f"Transcribed {_hms(seg.end)} of {_hms(duration)} (about {_hms(eta)} left).")
-    data = {"language": info.language, "duration": duration, "segments": segs, "complete": True,
+        samples = load_wav_float(audio, a, b)
+        try:
+            segments_iter, info = model.transcribe(
+                samples,
+                language=lang,
+                language_detection_segments=6,  # intros are often music; don't decide from 30 s
+                language_detection_threshold=0.6,
+                word_timestamps=True,
+                # VAD is fast but drops shouted/noisy gameplay speech, so it's a per-profile choice.
+                vad_filter=vad,
+                vad_parameters={"min_silence_duration_ms": 500} if vad else None,
+                hallucination_silence_threshold=None if vad else 2.0,
+                beam_size=5 if device == "cuda" else 1,
+                temperature=0.0 if device == "cpu" else [0.0, 0.2, 0.4],  # fallbacks are slow on CPU
+                condition_on_previous_text=False,
+            )
+            segs = []
+            for seg in segments_iter:
+                rep.check()
+                words = [[round(a + float(w.start), 2), round(a + float(w.end), 2), w.word.strip()]
+                         for w in (seg.words or []) if w.word.strip()]
+                segs.append({"start": round(a + float(seg.start), 2), "end": round(a + float(seg.end), 2),
+                             "text": seg.text.strip(), "words": words})
+                frac = (a + float(seg.end)) / duration
+                rep.progress("transcribe", frac)
+                now = time.monotonic()
+                if now - last_log > 60:
+                    last_log = now
+                    el = now - t0
+                    pos = a + float(seg.end)
+                    rate = max(pos - resumed_s, 1.0) / el          # audio seconds per wall second
+                    left = (duration - pos) / rate
+                    rep.log(f"Transcribed {_hms(a + seg.end)} of {_hms(duration)} (about {_hms(left)} left).")
+        except MemoryError as e:
+            raise ClipperError("Ran out of memory while transcribing.",
+                               "Close other programs, or pick a smaller Whisper model in Settings.") from e
+        if lang is None and info.language_probability >= 0.5:
+            lang, lang_prob = info.language, info.language_probability  # keep it for later pieces
+            rep.log(f"Language: {lang} ({lang_prob:.0%}).")
+        done[i] = segs
+        partial.write_text(json.dumps({"model": model_name, "vad": vad, "cuts": cuts, "language": lang,
+                                       "pieces": done}, ensure_ascii=False), encoding="utf-8")
+
+    segs = [s for i in sorted(done) for s in done[i]]
+    data = {"language": lang, "duration": duration, "segments": segs, "complete": True,
             "model": model_name, "vad": vad}
     out_json.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    partial.unlink(missing_ok=True)
     rep.progress("transcribe", 1.0)
     rep.log(f"Transcript: {len(segs)} segments, {sum(len(s['words']) for s in segs):,} words "
             f"in {_hms(time.monotonic() - t0)}.")
     return data
+
+
+PIECE = 600.0     # seconds of audio handed to Whisper at a time (bounds memory on 4 h videos)
+SEARCH = 20.0     # look this far either side of each boundary for the quietest moment
+
+
+def wav_seconds(path: Path) -> float:
+    import wave
+    with wave.open(str(path), "rb") as wf:
+        return wf.getnframes() / float(wf.getframerate())
+
+
+def piece_bounds(audio: Path, total: float) -> list[float]:
+    """Cut points about every 10 min, moved to the quietest 0.5 s nearby so no word is split."""
+    if total <= PIECE * 1.5:
+        return [0.0, round(total, 2)]
+    from .signals import loudness_series
+    t, db = loudness_series(audio)
+    cuts = [0.0]
+    b = PIECE
+    while b < total - PIECE * 0.5:
+        lo, hi = b - SEARCH, b + SEARCH
+        idx = [i for i in range(len(t)) if lo <= t[i] <= hi] if len(t) else []
+        cut = float(t[min(idx, key=lambda i: db[i])]) if idx else b
+        cuts.append(round(cut, 2))
+        b = cut + PIECE
+    cuts.append(round(total, 2))
+    return cuts
 
 
 def all_words(transcript: dict) -> list[list]:

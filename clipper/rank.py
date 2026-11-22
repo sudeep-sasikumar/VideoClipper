@@ -65,6 +65,7 @@ CAMPAIGN RULES (follow them strictly; they override the niche guidance):
 {rules_block}
 
 CLIP LENGTH: between {length['min']:.0f} and {length['max']:.0f} seconds, ideally about {length['target']:.0f} s.
+This is a HARD limit: end minus start must never exceed {length['max']:.0f} s. If a moment needs more, start later.
 - Start a moment before the action or the first line of the setup, so it hooks in the first second.
 - End right after the payoff (the reaction, punchline or result). Never cut mid-sentence.
 - Clips must not overlap each other. Spread across the part only if quality allows; quality first.
@@ -116,6 +117,7 @@ def _validate(items, a: float, b: float, duration: float, length: dict) -> list[
         hook = str(it.get("hook_text") or "").strip().strip('"')
         good.append({
             "start": max(0.0, s), "end": min(duration, e), "score": score,
+            "suggested": [round(s, 2), round(e, 2)],
             "hook_text": " ".join(hook.split()[:12]),
             "title": str(it.get("title") or hook or "clip").strip()[:80],
             "reason": str(it.get("reason") or "").strip(),
@@ -125,45 +127,47 @@ def _validate(items, a: float, b: float, duration: float, length: dict) -> list[
 
 
 def fit_to_words(c: dict, words: list[list], length: dict, duration: float) -> dict:
-    """Clamp length to the limits and snap edges to word boundaries."""
+    """Clamp length to the limits and snap edges to word boundaries.
+
+    Too long: trim the START (setup), never the end, because the prompt asks Claude to end right
+    on the payoff. Too short: extend the end.
+    """
     lo, hi = length["min"], length["max"]
     s, e = c["start"], c["end"]
-    if e - s > hi:
-        e = s + hi
-    if e - s < lo:
-        need = lo - (e - s)
-        e = min(duration, e + need)
-        if e - s < lo:
-            s = max(0.0, e - lo)
-    # Snap start back to the beginning of the word being spoken at s (or just before).
-    for ws, we, _w in words:
-        if we >= s:
-            if ws < s and s - ws < 1.0:
-                s = ws
-            break
-    s = max(0.0, s - 0.15)
-    # Snap end forward to finish the word in progress, plus a short tail.
+    # Finish the word in progress at the end, plus a short tail.
     for ws, we, _w in words:
         if ws <= e <= we + 0.05:
             e = we
             break
     e = min(duration, e + 0.35)
-    if e - s > hi:  # snapping pushed it over the cap
-        cap = s + hi
-        e = cap
-        for ws, we, _w in words:  # don't stop mid-word if cutting before that word still fits
-            if ws < cap < we and ws - s >= lo:
-                e = ws
+    if e - s < lo:
+        e = min(duration, s + lo)
+        if e - s < lo:
+            s = max(0.0, e - lo)
+    if e - s > hi:
+        s = e - hi
+        # Start on a word boundary: the next word start, if the clip stays long enough.
+        for ws, we, _w in words:
+            if we > s:
+                if ws > s and e - ws >= lo:
+                    s = ws
                 break
+    else:
+        # Start at the beginning of the word being spoken at s, if that keeps us under the cap.
+        for ws, we, _w in words:
+            if we >= s:
+                if ws < s and s - ws < 1.0 and e - ws <= hi:
+                    s = ws
+                break
+    s = max(0.0, s - 0.15) if e - (s - 0.15) <= hi else s
     # Hard guarantee: inside [lo, hi] whatever the snapping did.
     if e - s < lo:
         e = min(duration, s + lo)
         if e - s < lo:
             s = max(0.0, e - lo)
     if e - s > hi:
-        e = s + hi
-    c = dict(c, start=round(s, 2), end=round(e, 2))
-    return c
+        s = e - hi
+    return dict(c, start=round(s, 2), end=round(e, 2))
 
 
 def _overlap(a: dict, b: dict) -> float:

@@ -81,7 +81,7 @@ still be installed (step 1).
 | Stage | What happens |
 |---|---|
 | Download | yt-dlp downloads the best quality up to 1080p into `%APPDATA%\Clipper\temp`, plus the chat replay when one exists (YouTube live replays). |
-| Transcribe | faster-whisper with word timestamps. It uses an NVIDIA GPU (CUDA) if present, otherwise CPU int8. On a 4-core laptop CPU, `small` runs about 2.5–4x real time, so a 4 h VOD takes about 1–1.5 h. |
+| Transcribe | faster-whisper with word timestamps, fed 10 minutes at a time (cut at quiet moments) so memory stays under ~1 GB even for 4 h. It uses an NVIDIA GPU (CUDA) if present, otherwise CPU int8. On a 4-core laptop CPU, `small` runs about 3.5–4x real time (a 1 h 52 m stream took 30 min), so a 4 h VOD takes about 1–1.2 h. An interrupted transcription resumes from the last finished piece. |
 | Signals | Loudness spikes from the audio; message-rate spikes from chat. |
 | Rank | The transcript goes to Claude in 1-hour parts, with the signals, profile criteria and campaign rules, through `claude -p --output-format json`. Claude returns N candidates per hour (JSON is validated, with one retry if malformed). Candidates are merged and de-duplicated, and the top 20 are kept. |
 | Render | ffmpeg renders 1080x1920 at 30 fps: blurred background fill or facecam-on-top split, ASS word-by-word captions, a hook for the first 3 s, and zoom punch-ins on loudness spikes. |
