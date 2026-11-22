@@ -117,6 +117,9 @@ def render_clip(*, source: Path, source_offset: float, clip: dict, words: list[l
     source_offset: the absolute time that `source` starts at (0 for the full video, or the start
     of a downloaded section when re-rendering after the full video was deleted).
     """
+    # ffmpeg runs with cwd=work (for the ASS path), so every other path must be absolute.
+    work, source, out_path = Path(work).resolve(), Path(source).resolve(), Path(out_path).resolve()
+    voiceover_wav = Path(voiceover_wav).resolve() if voiceover_wav else None
     work.mkdir(parents=True, exist_ok=True)
     start, end = float(clip["start"]), float(clip["end"])
     dur = end - start

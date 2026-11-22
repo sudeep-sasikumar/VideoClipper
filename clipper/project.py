@@ -29,7 +29,7 @@ def load(folder: Path) -> dict:
     if not p.exists():
         raise ClipperError(f"No project.json in {folder}.", "Open a folder that Clipper created.")
     proj = json.loads(p.read_text(encoding="utf-8"))
-    proj["_folder"] = str(Path(folder))
+    proj["_folder"] = str(Path(folder).resolve())
     return proj
 
 

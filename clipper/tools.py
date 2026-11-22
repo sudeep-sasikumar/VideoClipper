@@ -50,6 +50,10 @@ def find_ffmpeg(name: str = "ffmpeg") -> str:
         raise ToolMissingError(
             f"{name} was not found.",
             "Install it with:  winget install Gyan.FFmpeg   then restart Clipper.")
+    # Some yt-dlp paths (partial downloads) only look on PATH, so put ours there.
+    d = str(Path(found).parent)
+    if d.lower() not in os.environ.get("PATH", "").lower().split(os.pathsep):
+        os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
     return found
 
 

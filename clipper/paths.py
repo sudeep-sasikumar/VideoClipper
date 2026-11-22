@@ -33,6 +33,26 @@ def ensure_dirs() -> None:
         d.mkdir(parents=True, exist_ok=True)
 
 
+def prune_temp(max_age_days: float = 2.0) -> None:
+    """Drop cached re-render sections and leftover render folders older than max_age_days.
+
+    Unfinished job folders (which allow resuming) are kept for a week.
+    """
+    import shutil
+    import time
+    if not TEMP_ROOT.is_dir():
+        return
+    now = time.time()
+    for d in TEMP_ROOT.iterdir():
+        try:
+            age = (now - d.stat().st_mtime) / 86400
+        except OSError:
+            continue
+        limit = max_age_days if d.name.startswith(("sections_", "render_")) else 7.0
+        if age > limit:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 def load_settings() -> dict:
     ensure_dirs()
     data = dict(DEFAULT_SETTINGS)

@@ -8,7 +8,7 @@ from pathlib import Path
 import yt_dlp
 from yt_dlp.utils import DownloadCancelled, DownloadError, ExtractorError, download_range_func
 
-from .errors import BadLinkError, Cancelled, ClipperError, DiskSpaceError
+from .errors import BadLinkError, Cancelled, ClipperError, DiskSpaceError, ToolMissingError
 from .events import Reporter
 from .tools import check_disk, ffmpeg_dir, is_disk_full, js_runtimes
 
@@ -57,9 +57,11 @@ def _clean_error(exc: Exception) -> str:
     return msg.replace("ERROR: ", "").strip()
 
 
-def _bad_link(exc: Exception) -> BadLinkError:
+def _bad_link(exc: Exception) -> ClipperError:
     msg = _clean_error(exc)
     low = msg.lower()
+    if "ffmpeg" in low and ("not installed" in low or "not found" in low):
+        return ToolMissingError("ffmpeg was not found.", "Install it with:  winget install Gyan.FFmpeg")
     if "unsupported url" in low or "is not a valid url" in low:
         return BadLinkError("That link isn't a video page Clipper can read.", msg)
     if "private" in low:

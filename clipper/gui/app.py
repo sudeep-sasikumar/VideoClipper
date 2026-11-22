@@ -19,8 +19,10 @@ def main() -> int:
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
 
-    from ..paths import INSTALL_DIR
+    from ..paths import INSTALL_DIR, prune_temp
     from .main_window import MainWindow
+
+    prune_temp()
 
     app = QApplication(sys.argv)
     app.setApplicationName("Clipper")
