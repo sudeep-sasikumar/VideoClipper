@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+build/
+dist/
+output/
+_temp/
+*.mp4
+*.mkv
+*.webm
+*.wav
+.claude/
