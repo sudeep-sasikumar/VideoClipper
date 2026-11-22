@@ -1,0 +1,40 @@
+{
+  "name": "Podcast",
+  "description": "Talking-head podcasts and interviews. Short spoken intro on each clip.",
+  "highlight_criteria": "A complete thought with a strong opening line: surprising facts, contrarian opinions, emotional stories, funny exchanges, practical advice someone would save or share. Start on the sentence that sets up the point and end right after the payoff. No clips that depend on earlier context to make sense.",
+  "candidates_per_hour": 3,
+  "clip_length": {"min": 25, "max": 60, "target": 45},
+  "whisper_model": "small",
+  "language": null,
+  "vad_filter": true,
+  "layout": {
+    "mode": "blur",
+    "facecam": {"x": 0.0, "y": 0.0, "w": 0.5, "h": 1.0},
+    "split_top_ratio": 0.5,
+    "foreground_zoom": 1.25
+  },
+  "captions": {
+    "enabled": true,
+    "font": "Arial Black",
+    "size": 76,
+    "color": "#FFFFFF",
+    "highlight": "#5EC8FF",
+    "outline": "#000000",
+    "outline_width": 6,
+    "shadow": 2,
+    "uppercase": false,
+    "words_per_line": 4,
+    "position_y": 0.70
+  },
+  "hook": {
+    "enabled": true,
+    "font": "Arial Black",
+    "size": 64,
+    "color": "#111111",
+    "box": "#FFFFFF",
+    "duration": 3.0,
+    "position_y": 0.15
+  },
+  "zoom": {"enabled": true, "amount": 0.05, "max_punches": 4, "length": 0.9},
+  "voiceover": {"enabled": true, "voice": "af_heart", "speed": 1.0, "volume": 1.0, "duck": 0.3}
+}

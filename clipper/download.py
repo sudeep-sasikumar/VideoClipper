@@ -85,7 +85,8 @@ def validate_url(url: str) -> str:
 def probe(url: str, rep: Reporter) -> dict:
     """Read metadata without downloading. Raises BadLinkError."""
     url = validate_url(url)
-    opts = _base_opts(rep) | {"format": FORMAT, "skip_download": True}
+    opts = _base_opts(rep) | {"format": FORMAT, "skip_download": True, "extract_flat": "in_playlist",
+                              "playlist_items": "1"}
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)

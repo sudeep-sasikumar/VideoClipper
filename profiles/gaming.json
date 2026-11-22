@@ -1,0 +1,41 @@
+{
+  "name": "Gaming",
+  "description": "Gameplay videos and gaming YouTube. Default profile.",
+  "default": true,
+  "highlight_criteria": "Clutch plays, unbelievable wins or losses, rage moments, hilarious fails, jump scares, big reveals, funny reactions and banter, skill moments that make a viewer say 'no way'. The clip must make sense to someone who has not seen the rest of the video, and must start right before the action, not with a slow build-up.",
+  "candidates_per_hour": 3,
+  "clip_length": {"min": 20, "max": 60, "target": 35},
+  "whisper_model": "small",
+  "language": null,
+  "vad_filter": false,
+  "layout": {
+    "mode": "blur",
+    "facecam": {"x": 0.0, "y": 0.0, "w": 0.3, "h": 0.3},
+    "split_top_ratio": 0.38,
+    "foreground_zoom": 1.0
+  },
+  "captions": {
+    "enabled": true,
+    "font": "Arial Black",
+    "size": 84,
+    "color": "#FFFFFF",
+    "highlight": "#FFE21A",
+    "outline": "#000000",
+    "outline_width": 7,
+    "shadow": 2,
+    "uppercase": true,
+    "words_per_line": 3,
+    "position_y": 0.72
+  },
+  "hook": {
+    "enabled": true,
+    "font": "Arial Black",
+    "size": 72,
+    "color": "#FFFFFF",
+    "box": "#E3122C",
+    "duration": 3.0,
+    "position_y": 0.14
+  },
+  "zoom": {"enabled": true, "amount": 0.08, "max_punches": 6, "length": 0.7},
+  "voiceover": {"enabled": false, "voice": "am_michael", "speed": 1.05, "volume": 1.0, "duck": 0.35}
+}
