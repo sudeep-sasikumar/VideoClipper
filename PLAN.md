@@ -40,7 +40,7 @@ D:\Clipper
 
 ## Decisions I made where the brief left room (easy to change)
 - **Prompt goes over stdin, not as a `-p "<prompt>"` argument.** A 1 h transcript (~50k chars) is over Windows' 32k command-line limit. It's the same `claude -p` call on your subscription with no API key.
-- **3 candidates per hour vs top 20.** At 3/hour, even a 4 h video yields 12, so the top-20 cap never binds. `candidates_per_hour` is a profile field (default 3, as asked); set it to 6+ if you want up to 20 clips from long VODs.
+- **3 candidates per hour vs top 20.** At 3/hour, even a 4 h video yields 12, so the top-20 cap never binds. `candidates_per_hour` is a profile field (default 3, as asked); set it to 6+ if you want up to 20 clips from long VODs. **Update: default raised to 6.**
 - **Re-render after temp is deleted.** The source video is deleted on success as asked. Re-rendering a clip fetches only that clip's section (±30 s) with yt-dlp `download_ranges`, so editing doesn't re-download 4 hours. A setting "keep source video" (off by default) keeps it instead.
 - **Facecam position** isn't auto-detected; the `split` layout uses a crop box in the profile (fractions of the frame). Copy a profile and adjust it per streamer.
 - **Kokoro** runs via `kokoro-onnx` (ONNX Runtime, no PyTorch), so the exe stays small. Its int8 model (~90 MB) and voices download to `%APPDATA%\Clipper\models` on first use, as do Whisper models.

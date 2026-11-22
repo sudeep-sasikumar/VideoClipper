@@ -2,7 +2,7 @@
   "name": "Streamer",
   "description": "Twitch/YouTube stream VODs with a facecam. Facecam on top, gameplay below.",
   "highlight_criteria": "Big streamer reactions (screaming, laughing, shock), chat-driven moments, donations or raids that cause a reaction, funny conversations, hot takes, rage and wins. Prefer moments where both the face reaction and what caused it are visible. Use chat spikes as strong evidence, but remember chat reacts 5 to 20 seconds after the moment itself.",
-  "candidates_per_hour": 3,
+  "candidates_per_hour": 6,
   "clip_length": {"min": 20, "max": 60, "target": 40},
   "whisper_model": "small",
   "language": null,

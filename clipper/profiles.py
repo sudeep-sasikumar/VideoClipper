@@ -15,7 +15,7 @@ FALLBACK = {
     "name": "Gaming",
     "description": "",
     "highlight_criteria": "The most entertaining, surprising or emotional moments.",
-    "candidates_per_hour": 3,
+    "candidates_per_hour": 6,
     "clip_length": {"min": 20, "max": 60, "target": 35},
     "whisper_model": "small",
     "language": None,

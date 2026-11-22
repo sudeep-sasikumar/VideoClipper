@@ -10,7 +10,7 @@ from pathlib import Path
 from . import claude_cli, download, project, rank, signals, transcribe
 from .errors import Cancelled, ClipperError, DiskSpaceError
 from .events import Reporter
-from .paths import APP_DIR, TEMP_ROOT, ensure_dirs, safe_name
+from .paths import APP_DIR, DEFAULT_SETTINGS, TEMP_ROOT, ensure_dirs, safe_name
 from .rules import effective_length
 from .tools import check_disk, find_claude, find_ffmpeg, media_duration
 
@@ -56,7 +56,7 @@ def run_job(cfg: JobConfig, rep: Reporter) -> Path:
     if duration > 4.1 * 3600:
         rep.log(f"Note: this video is {duration / 3600:.1f} h, longer than the 4 h Clipper is tuned for.")
 
-    out_base = Path(cfg.output_dir or Path.home() / "Videos" / "Clipper")
+    out_base = Path(cfg.output_dir or DEFAULT_SETTINGS["output_dir"])
     check_disk(out_base, 800_000_000, "the finished clips")
     work = TEMP_ROOT / vid
     work.mkdir(parents=True, exist_ok=True)

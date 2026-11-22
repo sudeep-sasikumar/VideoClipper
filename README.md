@@ -6,7 +6,7 @@ Claude, and renders ranked, TikTok-ready 9:16 clips with word-by-word captions, 
 zoom punch-ins. You don't need to do anything after clicking Start.
 
 ```
-[output]\[video title]\
+D:\Clipper\output\[video title]\      (change the folder in Settings -> Output folder)
     01_score9_he_was_not_ready.mp4
     02_score8_...
     report.txt      timestamps, hook, why it was picked, link to the moment
@@ -83,7 +83,7 @@ still be installed (step 1).
 | Download | yt-dlp downloads the best quality up to 1080p into `%APPDATA%\Clipper\temp`, plus the chat replay when one exists (YouTube live replays). |
 | Transcribe | faster-whisper with word timestamps, fed 10 minutes at a time (cut at quiet moments) so memory stays under ~1 GB even for 4 h. It uses an NVIDIA GPU (CUDA) if present, otherwise CPU int8. On a 4-core laptop CPU, `small` runs about 3.5–4x real time (a 1 h 52 m stream took 30 min), so a 4 h VOD takes about 1–1.2 h. An interrupted transcription resumes from the last finished piece. |
 | Signals | Loudness spikes from the audio; message-rate spikes from chat. |
-| Rank | The transcript goes to Claude in 1-hour parts, with the signals, profile criteria and campaign rules, through `claude -p --output-format json`. Claude returns N candidates per hour (JSON is validated, with one retry if malformed). Candidates are merged and de-duplicated, and the top 20 are kept. |
+| Rank | The transcript goes to Claude in 1-hour parts, with the signals, profile criteria and campaign rules, through `claude -p --output-format json`. Claude returns 6 candidates per hour, and at least 6 for videos shorter than an hour (JSON is validated, with one retry if malformed). Candidates are merged and de-duplicated, and the top 20 are kept. Parts with little or no speech are ranked from the loudness spikes, a 30-second loudness timeline and the chat spikes; parts with no speech and no spikes are skipped. Claude runs with no tools and no MCP connectors. |
 | Render | ffmpeg renders 1080x1920 at 30 fps: blurred background fill or facecam-on-top split, ASS word-by-word captions, a hook for the first 3 s, and zoom punch-ins on loudness spikes. |
 | Voiceover | Optional per profile. Claude writes an intro line, Kokoro speaks it locally, and the original audio ducks underneath. |
 | Clean up | Temp files are deleted after success. |
@@ -100,7 +100,7 @@ you leave out falls back to `gaming.json`.
 | Key | Meaning |
 |---|---|
 | `highlight_criteria` | What counts as a good moment (goes into Claude's prompt) |
-| `candidates_per_hour` | Candidates requested per hour of video (default 3). Set it to 6+ to reach 20 clips on long VODs |
+| `candidates_per_hour` | Candidates requested per hour of video (default 6, so a 4 h VOD can fill the top 20) |
 | `clip_length` | `min` / `max` / `target` seconds |
 | `whisper_model`, `vad_filter`, `language` | Transcription. VAD is faster but can miss shouted speech over game audio |
 | `layout.mode` | `blur` (blurred fill) or `split` (facecam on top, gameplay below) |
@@ -140,5 +140,6 @@ on *Settings → Keep the downloaded video* to skip that.
 | Claude CLI not found | `winget install Anthropic.ClaudeCode` |
 | Claude CLI not logged in | Run `claude`, type `/login` |
 | Claude usage limit reached | Wait for your limit to reset; the run resumes from the ranking step |
+| Nothing to rank | The video has no speech, no loud moments and no chat replay; there's nothing for Claude to go on |
 | Not enough disk space | Free space, or point Settings → Output folder at another drive. A 4 h 1080p VOD needs about 8–15 GB of temp space |
 | ffmpeg not found | `winget install Gyan.FFmpeg`, then restart Clipper |

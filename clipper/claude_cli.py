@@ -22,8 +22,10 @@ _LOGIN_HINT = "Open a terminal, run:  claude   then type  /login  and finish sig
 def ask(prompt: str, model: str = "", timeout: int = 900, system: str = SYSTEM) -> str:
     """Run one prompt and return Claude's text answer. Raises a ClipperError subclass."""
     exe = find_claude()
-    cmd = [exe, "-p", "--output-format", "json", "--tools", "", "--no-session-persistence",
-           "--system-prompt", system]
+    # No tools at all: built-ins off, and no MCP connectors (strict config with none given loads
+    # no servers; the deny rule also blocks any that slip in some other way).
+    cmd = [exe, "-p", "--output-format", "json", "--tools", "", "--strict-mcp-config",
+           "--disallowedTools", "mcp__*", "--no-session-persistence", "--system-prompt", system]
     if model:
         cmd += ["--model", model]
     try:

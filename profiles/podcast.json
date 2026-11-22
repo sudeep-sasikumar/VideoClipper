@@ -2,7 +2,7 @@
   "name": "Podcast",
   "description": "Talking-head podcasts and interviews. Short spoken intro on each clip.",
   "highlight_criteria": "A complete thought with a strong opening line: surprising facts, contrarian opinions, emotional stories, funny exchanges, practical advice someone would save or share. Start on the sentence that sets up the point and end right after the payoff. No clips that depend on earlier context to make sense.",
-  "candidates_per_hour": 3,
+  "candidates_per_hour": 6,
   "clip_length": {"min": 25, "max": 60, "target": 45},
   "whisper_model": "small",
   "language": null,

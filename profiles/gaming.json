@@ -3,7 +3,7 @@
   "description": "Gameplay videos and gaming YouTube. Default profile.",
   "default": true,
   "highlight_criteria": "Clutch plays, unbelievable wins or losses, rage moments, hilarious fails, jump scares, big reveals, funny reactions and banter, skill moments that make a viewer say 'no way'. The clip must make sense to someone who has not seen the rest of the video, and must start right before the action, not with a slow build-up.",
-  "candidates_per_hour": 3,
+  "candidates_per_hour": 6,
   "clip_length": {"min": 20, "max": 60, "target": 35},
   "whisper_model": "small",
   "language": null,

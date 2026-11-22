@@ -20,7 +20,7 @@ BUNDLED_PROFILES_DIR = INSTALL_DIR / "profiles"
 TEMP_ROOT = APP_DIR / "temp"
 
 DEFAULT_SETTINGS = {
-    "output_dir": str(Path.home() / "Videos" / "Clipper"),
+    "output_dir": r"D:\Clipper\output",
     "whisper_model": "",          # empty = use the profile's model
     "keep_source": False,         # keep the downloaded video for fast re-renders
     "claude_model": "",           # empty = CLI default

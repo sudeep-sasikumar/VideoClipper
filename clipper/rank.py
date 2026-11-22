@@ -35,24 +35,61 @@ def _transcript_text(transcript: dict, a: float, b: float, hours: bool) -> str:
     return "\n".join(lines)
 
 
-def _signals_text(signals: dict, a: float, b: float, hours: bool) -> str:
+LOW_SPEECH_WORDS_PER_10MIN = 20
+
+
+def _words_in(transcript: dict, a: float, b: float) -> int:
+    return sum(len(s["words"]) for s in transcript["segments"] if a <= s["start"] < b)
+
+
+def is_low_speech(transcript: dict, a: float, b: float) -> bool:
+    return _words_in(transcript, a, b) < LOW_SPEECH_WORDS_PER_10MIN * max(1.0, (b - a) / 600)
+
+
+def _signals_text(signals: dict, a: float, b: float, hours: bool, low_speech: bool = False) -> str:
     out = []
-    loud = sorted((x for x in signals.get("loudness", []) if a <= x["t"] <= b), key=lambda x: -x["z"])[:25]
+    n_loud, n_chat = (40, 25) if low_speech else (25, 15)
+    loud = sorted((x for x in signals.get("loudness", []) if a <= x["t"] <= b), key=lambda x: -x["z"])[:n_loud]
     if loud:
         out.append("Audio loudness spikes (time, strength; screaming/hype/explosions often show here):")
         out.append(", ".join(f"{fmt_ts(x['t'], hours)} ({x['z']:.1f})" for x in sorted(loud, key=lambda x: x["t"])))
-    chat = sorted((x for x in signals.get("chat", []) if a <= x["t"] <= b), key=lambda x: -x["z"])[:15]
+    chat = sorted((x for x in signals.get("chat", []) if a <= x["t"] <= b), key=lambda x: -x["z"])[:n_chat]
     if chat:
         out.append("Chat message-rate spikes (time, strength, msgs per 10 s). Chat reacts 5-20 s AFTER the moment:")
         out.append(", ".join(f"{fmt_ts(x['t'], hours)} ({x['z']:.1f}, {x['rate']})" for x in sorted(chat, key=lambda x: x["t"])))
     elif signals.get("has_chat"):
         out.append("Chat replay was available but showed no clear spikes in this part.")
+    if low_speech:
+        tl = [x for x in signals.get("timeline", []) if a <= x[0] < b]
+        if tl:
+            out.append("Average loudness every 30 s (time, dBFS; higher = louder, about -20 is loud, "
+                       "-40 is quiet). Use it to see where action builds up and peaks:")
+            out.append(", ".join(f"{fmt_ts(t, hours)} {d:.0f}" for t, d in tl))
     return "\n".join(out) or "No audio or chat signals stood out in this part."
+
+
+def has_signals(signals: dict, a: float, b: float) -> bool:
+    return any(a <= x["t"] <= b for x in signals.get("loudness", [])) or \
+        any(a <= x["t"] <= b for x in signals.get("chat", []))
+
+
+LOW_SPEECH_GUIDE = """NOTE: THIS PART HAS LITTLE OR NO SPEECH (music, gameplay sounds, or a silent streamer).
+Choose clips from the signals instead of the transcript:
+- Center each clip on the strongest loudness spikes and on where the loudness timeline rises to a peak.
+- Start 5-10 s before a loudness spike so the build-up is visible; end a few seconds after it settles.
+- Chat spikes come 5-20 s AFTER the moment, so the moment itself is earlier than the chat spike.
+- Hook text and titles must not invent specific events you can't know. Use the video title and
+  the niche to write a curiosity hook that fits ("Wait for the ending", "This got out of hand fast").
+- Score honestly: signal-only picks are less certain, so cap them at 7 unless chat and loudness agree.
+"""
 
 
 def build_prompt(*, title: str, profile: dict, length: dict, rules: str, transcript: dict, signals: dict,
                  a: float, b: float, n: int, hours: bool, part: int, parts: int) -> str:
     rules_block = rules.strip() or "(none)"
+    low = is_low_speech(transcript, a, b)
+    guide = ("\n" + LOW_SPEECH_GUIDE) if low else ""
+    tx = _transcript_text(transcript, a, b, hours) or "(no speech detected in this part)"
     return f"""Find the {n} best short-form clips (TikTok / Reels / Shorts) in this part of a video.
 
 VIDEO: "{title}"
@@ -69,12 +106,12 @@ This is a HARD limit: end minus start must never exceed {length['max']:.0f} s. I
 - Start a moment before the action or the first line of the setup, so it hooks in the first second.
 - End right after the payoff (the reaction, punchline or result). Never cut mid-sentence.
 - Clips must not overlap each other. Spread across the part only if quality allows; quality first.
-
+{guide}
 SIGNALS:
-{_signals_text(signals, a, b, hours)}
+{_signals_text(signals, a, b, hours, low)}
 
 TRANSCRIPT (timestamps are the segment start times):
-{_transcript_text(transcript, a, b, hours)}
+{tx}
 
 Return ONLY a JSON array of exactly {n} objects (fewer only if the part truly has nothing usable), best first:
 [
@@ -194,7 +231,8 @@ def rank(*, title: str, transcript: dict, signals: dict, profile: dict, length: 
     if cache and cache.exists():
         try:
             data = json.loads(cache.read_text(encoding="utf-8"))
-            if data.get("rules") == rules and data.get("profile") == profile.get("_id") and data.get("clips"):
+            if data.get("rules") == rules and data.get("profile") == profile.get("_id") and data.get("clips") \
+                    and data.get("cph") == profile.get("candidates_per_hour"):
                 rep.log("Reusing ranking from an earlier run.")
                 rep.progress("rank", 1.0)
                 return data["clips"]
@@ -202,13 +240,21 @@ def rank(*, title: str, transcript: dict, signals: dict, profile: dict, length: 
             pass
 
     words = [w for s in transcript["segments"] for w in s["words"]]
-    if len(words) < 20:
-        raise ClipperError("The video has almost no speech, so there's nothing to rank.",
-                           "Clipper needs talking/commentary to find moments.")
     chunks = make_chunks(duration)
     hours = duration >= 3600
-    cph = int(profile.get("candidates_per_hour", 3))
-    rep.log(f"Asking Claude for highlights in {len(chunks)} part(s)...")
+    cph = int(profile.get("candidates_per_hour", 6))
+    # A part is worth asking about if it has speech or at least one loudness/chat spike.
+    usable = [(i, a, b) for i, (a, b) in enumerate(chunks)
+              if not is_low_speech(transcript, a, b) or has_signals(signals, a, b)]
+    if not usable:
+        raise ClipperError("Nothing to rank: the video has almost no speech and no loudness or chat spikes.",
+                           "Clipper needs talking, loud moments, or a chat replay to find highlights.")
+    low = sum(1 for i, a, b in usable if is_low_speech(transcript, a, b))
+    if low:
+        rep.log(f"{low} of {len(chunks)} part(s) have little speech; ranking those from loudness/chat spikes.")
+    if len(usable) < len(chunks):
+        rep.log(f"Skipping {len(chunks) - len(usable)} part(s) with no speech and no spikes.")
+    rep.log(f"Asking Claude for highlights in {len(usable)} part(s)...")
 
     def do_chunk(i: int, a: float, b: float) -> list[dict]:
         n = max(cph, round(cph * (b - a) / CHUNK))
@@ -236,7 +282,7 @@ def rank(*, title: str, transcript: dict, signals: dict, profile: dict, length: 
     errors: list[str] = []
     done = 0
     with ThreadPoolExecutor(max_workers=2) as pool:
-        futs = {pool.submit(do_chunk, i, a, b): i for i, (a, b) in enumerate(chunks)}
+        futs = {pool.submit(do_chunk, i, a, b): i for i, a, b in usable}
         for f in as_completed(futs):
             i = futs[f]
             try:
@@ -247,7 +293,7 @@ def rank(*, title: str, transcript: dict, signals: dict, profile: dict, length: 
                 errors.append(f"part {i + 1}: {e.message}")
                 rep.log(f"Part {i + 1}/{len(chunks)}: skipped ({e.message}).")
             done += 1
-            rep.progress("rank", done / len(chunks))
+            rep.progress("rank", done / len(usable))
     if not cands:
         raise ClaudeOutputError("Claude didn't return any usable clips.", "; ".join(errors))
 
@@ -256,7 +302,8 @@ def rank(*, title: str, transcript: dict, signals: dict, profile: dict, length: 
     for n, c in enumerate(clips, 1):
         c["rank"] = n
     if cache:
-        cache.write_text(json.dumps({"rules": rules, "profile": profile.get("_id"), "clips": clips},
+        cache.write_text(json.dumps({"rules": rules, "profile": profile.get("_id"), "clips": clips,
+                                    "cph": profile.get("candidates_per_hour")},
                                     ensure_ascii=False, indent=2), encoding="utf-8")
     rep.log(f"Kept {len(clips)} clip(s) from {len(cands)} candidate(s).")
     return clips

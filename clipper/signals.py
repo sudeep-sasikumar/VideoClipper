@@ -91,9 +91,26 @@ def chat_spikes(times: list[float] | None, duration: float, bin_s: float = 10.0,
             for i in _peaks(t, z, thresh, min_gap) if counts[i] >= 5]
 
 
+def loudness_timeline(wav_path: Path, step: float = 30.0) -> list[list[float]]:
+    """[[t, mean dBFS], ...] every `step` seconds: a coarse map of where the action is."""
+    t, db = loudness_series(wav_path)
+    if not len(db):
+        return []
+    k = max(1, int(step / WIN))
+    n = len(db) // k
+    out = []
+    for i in range(n + (1 if len(db) % k else 0)):
+        blk = db[i * k:(i + 1) * k]
+        # Mean of power, not of dB, so a loud burst isn't averaged away.
+        p = np.mean(np.power(10.0, np.maximum(blk, -70.0) / 10.0))
+        out.append([round(i * step, 1), round(float(10 * np.log10(p + 1e-12)), 1)])
+    return out
+
+
 def compute(wav_path: Path, chat_times: list[float] | None, duration: float) -> dict:
     return {
         "loudness": loudness_spikes(wav_path),
         "chat": chat_spikes(chat_times, duration),
         "has_chat": bool(chat_times),
+        "timeline": loudness_timeline(wav_path),
     }
