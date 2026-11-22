@@ -148,13 +148,20 @@ def fit_to_words(c: dict, words: list[list], length: dict, duration: float) -> d
             e = we
             break
     e = min(duration, e + 0.35)
-    if e - s > hi:  # snapping pushed it over the cap: end at the last word that fits
+    if e - s > hi:  # snapping pushed it over the cap
         cap = s + hi
-        last = None
-        for ws, we, _w in words:
-            if s <= ws and we <= cap:
-                last = we
-        e = min(cap, (last + 0.3) if last else cap)
+        e = cap
+        for ws, we, _w in words:  # don't stop mid-word if cutting before that word still fits
+            if ws < cap < we and ws - s >= lo:
+                e = ws
+                break
+    # Hard guarantee: inside [lo, hi] whatever the snapping did.
+    if e - s < lo:
+        e = min(duration, s + lo)
+        if e - s < lo:
+            s = max(0.0, e - lo)
+    if e - s > hi:
+        e = s + hi
     c = dict(c, start=round(s, 2), end=round(e, 2))
     return c
 
