@@ -165,6 +165,42 @@ def download_video(info: dict, workdir: Path, rep: Reporter) -> Path:
     return vids[0]
 
 
+def download_audio(info: dict, workdir: Path, rep: Reporter) -> Path:
+    """Audio only (for long VODs): a 27 h stream is ~2 GB of audio instead of ~90 GB of video.
+    The clips' video is fetched later, one short section per clip."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    check_disk(workdir, int((info.get("duration") or 3600) * 40_000) + 1_000_000_000, "the audio download")
+
+    def hook(d):
+        if rep.cancelled:
+            raise DownloadCancelled()
+        if d.get("status") == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            if total:
+                rep.progress("download", min(0.99, d.get("downloaded_bytes", 0) / total))
+
+    opts = _base_opts(rep) | {
+        "format": "ba[ext=m4a]/ba[acodec^=mp4a]/ba/bestaudio",
+        "outtmpl": str(workdir / "source_audio.%(ext)s"),
+        "progress_hooks": [hook],
+        "concurrent_fragment_downloads": 4,
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.process_ie_result(dict(info), download=True)
+    except DownloadCancelled as e:
+        raise Cancelled() from e
+    except (DownloadError, ExtractorError) as e:
+        if "No space left" in str(e) or "not enough space" in str(e):
+            raise DiskSpaceError("The disk filled up during the audio download.") from e
+        raise _bad_link(e) from e
+    files = [p for p in workdir.glob("source_audio.*") if not p.name.endswith((".part", ".ytdl"))]
+    if not files:
+        raise ClipperError("The audio download finished but produced no file.")
+    rep.progress("download", 1.0)
+    return files[0]
+
+
 # ---------------------------------------------------------------- chat replay
 
 def chat_available(info: dict) -> str | None:

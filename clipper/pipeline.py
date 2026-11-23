@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import claude_cli, download, project, rank, signals, transcribe
-from .errors import Cancelled, ClipperError, DiskSpaceError
+from .errors import BadLinkError, Cancelled, ClipperError, DiskSpaceError
 from .events import Reporter
 from .paths import APP_DIR, DEFAULT_SETTINGS, TEMP_ROOT, ensure_dirs, safe_name
 from .rules import effective_length
@@ -25,9 +25,13 @@ class JobConfig:
     keep_source: bool = False
     max_clips: int = 20
     claude_model: str = ""
+    audio_first: bool | None = None  # None = automatic (long VODs, or not enough disk for the video)
     extras: bool = False         # teaser, context banner, callouts, end card
     end_card: bool = True        # thumbnail end card as part of the extras
     overlay_name: str = ""       # name that must appear on screen in every clip
+
+
+AUDIO_FIRST_HOURS = 5.0   # longer videos download audio first and fetch only the clips' video
 
 
 def _save_thumbnail(info: dict, folder: Path, rep: Reporter) -> str | None:
@@ -83,14 +87,42 @@ def run_job(cfg: JobConfig, rep: Reporter) -> Path:
     work = TEMP_ROOT / vid
     work.mkdir(parents=True, exist_ok=True)
 
-    src = next((p for p in work.glob("source.*") if p.suffix in (".mp4", ".mkv", ".webm")
-                and not p.name.endswith(".part")), None)
-    if src and abs(media_duration(src) - duration) < 5:
+    video = next((p for p in work.glob("source.*") if p.suffix in (".mp4", ".mkv", ".webm")
+                  and ".temp" not in p.name and not p.name.endswith(".part")), None)
+    if video and abs(media_duration(video) - duration) >= 5:
+        video = None
+    audio_first = cfg.audio_first
+    if audio_first is None and video is None:
+        need = int(download.estimate_size(info) * 2.2) + 1_000_000_000
+        free = shutil.disk_usage(work).free
+        audio_first = duration > AUDIO_FIRST_HOURS * 3600 or free < need
+        if audio_first:
+            why = (f"it is {duration / 3600:.1f} h long" if duration > AUDIO_FIRST_HOURS * 3600
+                   else f"only {free / 1e9:.0f} GB is free for about {need / 1e9:.0f} GB of video")
+            rep.log(f"Audio-first mode ({why}): downloading only the audio now; each clip's video is "
+                    "fetched on its own when it is rendered.")
+    if video:
         rep.log("Reusing the video downloaded in an earlier run.")
         rep.progress("download", 1.0)
+        src = video
+    elif audio_first:
+        src = next((p for p in work.glob("source_audio.*") if not p.name.endswith((".part", ".ytdl"))), None)
+        if src and abs(media_duration(src) - duration) < 30:
+            rep.log("Reusing the audio downloaded in an earlier run.")
+            rep.progress("download", 1.0)
+        else:
+            rep.log("Downloading the audio...")
+            try:
+                src = download.download_audio(info, work, rep)
+            except BadLinkError as e:
+                # Some sites refuse audio-only streams; the full video still works.
+                rep.log(f"Audio-only download failed ({e.hint or e.message}); downloading the video instead.")
+                for p in work.glob("source_audio.*"):
+                    p.unlink(missing_ok=True)
+                src = video = download.download_video(info, work, rep)
     else:
         rep.log("Downloading video (up to 1080p)...")
-        src = download.download_video(info, work, rep)
+        src = video = download.download_video(info, work, rep)
     duration = media_duration(src) or duration
 
     chat_file = work / "chat_times.json"
@@ -149,9 +181,9 @@ def run_job(cfg: JobConfig, rep: Reporter) -> Path:
         c["voiceover"] = vo_on and bool(c.get("intro_line"))
         proj["clips"].append(c)
     project.save(proj)
-    if profile.get("layout", {}).get("mode", "blur") != "blur":
+    if video is not None and profile.get("layout", {}).get("mode", "blur") != "blur":
         rep.log("Looking for the facecam in each clip...")
-        project.detect_facecams(proj, src, 0.0, rep)
+        project.detect_facecams(proj, video, 0.0, rep)
         project.save(proj)
 
     rep.log(f"Rendering {len(clips)} clip(s) to {folder} ...")
@@ -161,7 +193,10 @@ def run_job(cfg: JobConfig, rep: Reporter) -> Path:
         rep.check()
         rep.log(f"Clip {c['rank']}/{n}: score {c['score']:.0f}, {c['end'] - c['start']:.0f} s - {c.get('hook_text', '')}")
         try:
-            project.render_one(proj, c, rep, source=src, source_offset=0.0, work_root=work)
+            if video is not None:
+                project.render_one(proj, c, rep, source=video, source_offset=0.0, work_root=work)
+            else:  # audio-first: render_one fetches just this clip's section of the video
+                project.render_one(proj, c, rep, work_root=work)
         except (Cancelled, DiskSpaceError):
             project.save(proj)
             raise
@@ -176,13 +211,14 @@ def run_job(cfg: JobConfig, rep: Reporter) -> Path:
         raise ClipperError("Every clip failed to render.", "See the log above for ffmpeg's error.")
 
     # ---- 7. clean up
-    if cfg.keep_source:
+    if cfg.keep_source and video is not None:
         keep_dir = APP_DIR / "sources"
         keep_dir.mkdir(parents=True, exist_ok=True)
-        kept = keep_dir / f"{vid}{src.suffix}"
-        shutil.move(str(src), kept)
+        kept = keep_dir / f"{vid}{video.suffix}"
+        shutil.move(str(video), kept)
         proj["source_path"] = str(kept)
         project.save(proj)
     shutil.rmtree(work, ignore_errors=True)
+    shutil.rmtree(TEMP_ROOT / f"sections_{vid}", ignore_errors=True)
     rep.log(f"Done in {(time.monotonic() - t0) / 60:.1f} min: {n - failed} clip(s) in {folder}")
     return folder
