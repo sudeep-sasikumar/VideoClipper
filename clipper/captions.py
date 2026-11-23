@@ -145,7 +145,7 @@ def write_ass(path, *, lines: list[dict], clip_start: float, clip_end: float, ca
     hook_text = (hook_text or "").strip()
     if hs.get("enabled", True) and hook_text:
         hd = min(float(hs.get("duration", 3.0)) + offset, total)
-        text = ("{" + rf"\pos({W // 2},{hook_y})\fad(120,220)\fscx80\fscy80\t(0,160,\fscx100\fscy100)" + "}"
+        text = ("{" + rf"\pos({W // 2},{hook_y})\fad(0,220)\fscx92\fscy92\t(0,140,\fscx100\fscy100)" + "}"
                 + _wrap_hook(_esc(hook_text.upper())))
         out.append(f"Dialogue: 2,{_ts(0)},{_ts(hd)},Hook,,0,0,0,,{text}")
 

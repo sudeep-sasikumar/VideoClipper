@@ -104,7 +104,10 @@ def _source_for(proj: dict, clip: dict, rep: Reporter) -> tuple[Path, float]:
 
 
 def render_one(proj: dict, clip: dict, rep: Reporter, source: Path | None = None,
-               source_offset: float = 0.0, work_root: Path | None = None) -> Path:
+               source_offset: float = 0.0, work_root: Path | None = None, out_path: Path | None = None,
+               crf: int = 21, audio_bitrate: str = "160k", audio_post: str = "") -> Path:
+    """Render one clip into the project folder (or to out_path, e.g. a delivery copy, leaving the
+    project's own clip file and name alone)."""
     folder = Path(proj["_folder"])
     profile = proj["profile"]
     work = (work_root or TEMP_ROOT) / f"render_{proj['video']['id']}_{clip['rank']:02d}"
@@ -119,13 +122,22 @@ def render_one(proj: dict, clip: dict, rep: Reporter, source: Path | None = None
 
     layout = effective_layout(proj, clip, source, source_offset, rep)
     plan = extras_plan(proj, clip)
+    if out_path is not None:
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        render.render_clip(source=source, source_offset=source_offset, clip=clip, words=words_of(proj),
+                           profile=profile, loudness=proj.get("signals", {}).get("loudness", []),
+                           out_path=Path(out_path), work=work, rep=rep, voiceover_wav=vo_wav, vo_dur=vo_dur,
+                           layout=layout, extras=plan, crf=crf, audio_bitrate=audio_bitrate,
+                           audio_post=audio_post)
+        shutil.rmtree(work, ignore_errors=True)
+        return Path(out_path)
     new_name = clip_filename(clip)
     old = clip.get("file")
     out = folder / new_name
     render.render_clip(source=source, source_offset=source_offset, clip=clip, words=words_of(proj),
                        profile=profile, loudness=proj.get("signals", {}).get("loudness", []),
                        out_path=out, work=work, rep=rep, voiceover_wav=vo_wav, vo_dur=vo_dur, layout=layout,
-                       extras=plan)
+                       extras=plan, crf=crf, audio_bitrate=audio_bitrate, audio_post=audio_post)
     if old and old != new_name:
         (folder / old).unlink(missing_ok=True)
     clip["file"] = new_name

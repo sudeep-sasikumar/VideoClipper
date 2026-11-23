@@ -151,22 +151,31 @@ def build_filtergraph(layout: dict, punches: list[float], zoom: dict, *, src_w: 
             g.append("[0:a]anull[ain]")
     else:
         g.append("anullsrc=r=48000:cl=stereo[ain]")
+    mutes = ex.get("mutes") or []
+    if mutes:
+        cond = "+".join(f"between(t,{a:.3f},{b:.3f})" for a, b in mutes)
+        g.append(f"[ain]volume=0:enable='{cond}'[ainm]")
+        g.append("[ainm]anull[ain2]")
+    else:
+        g.append("[ain]anull[ain2]")
     if vo:
         delay = 0.25
         duck = float(vo_cfg.get("duck", 0.35))
         vol = float(vo_cfg.get("volume", 1.0))
         a, b = delay, delay + vo_dur
-        g.append(f"[ain]aresample=48000,volume='if(between(t,{a:.2f},{b:.2f}),{duck},1)':eval=frame[orig]")
+        g.append(f"[ain2]aresample=48000,volume='if(between(t,{a:.2f},{b:.2f}),{duck},1)':eval=frame[orig]")
         g.append(f"[{ex.get('vo_input', 1)}:a]aresample=48000,aformat=channel_layouts=stereo,volume={vol},"
                  f"adelay={int(delay * 1000)}:all=1[vo]")
         g.append("[orig][vo]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[amix]")
     else:
-        g.append("[ain]aresample=48000,alimiter=limit=0.95[amix]")
+        g.append("[ain2]aresample=48000,alimiter=limit=0.95[amix]")
+    post_f = ex.get("audio_post") or "anull"   # e.g. a loudnorm pass for the final delivery encode
     if post > 0:
         t0 = pre + dur
-        g.append(f"[amix]apad=pad_dur={post:.3f},afade=t=out:st={max(0.0, t0 - 0.4):.3f}:d={post + 0.4:.3f}[a]")
+        g.append(f"[amix]apad=pad_dur={post:.3f},afade=t=out:st={max(0.0, t0 - 0.4):.3f}:d={post + 0.4:.3f},"
+                 f"{post_f}[a]")
     else:
-        g.append("[amix]anull[a]")
+        g.append(f"[amix]{post_f}[a]")
     return ";\n".join(g)
 
 
@@ -190,6 +199,23 @@ def text_positions(profile: dict, layout: dict) -> tuple[dict, dict]:
     return cap, hook
 
 
+def mute_ranges(clip: dict, pre: float = 0.0, teaser=None) -> list[tuple[float, float]]:
+    """clip["mute"] source-time ranges -> output-time ranges (main part, plus the teaser if it overlaps)."""
+    start, end = float(clip["start"]), float(clip["end"])
+    out = []
+    for a, b in clip.get("mute") or []:
+        a, b = max(float(a), start), min(float(b), end)
+        if b <= a:
+            continue
+        out.append((a - start + pre, b - start + pre))
+        if teaser:
+            ts, te = teaser
+            ta, tb = max(a, start + ts), min(b, start + te)
+            if tb > ta:
+                out.append((ta - start - ts, tb - start - ts))
+    return out
+
+
 def probe_size(path: Path) -> tuple[int, int]:
     r = run([find_ffmpeg("ffprobe"), "-v", "error", "-select_streams", "v:0", "-show_entries",
              "stream=width,height", "-of", "json", str(path)])
@@ -203,12 +229,15 @@ def probe_size(path: Path) -> tuple[int, int]:
 def render_clip(*, source: Path, source_offset: float, clip: dict, words: list[list], profile: dict,
                 loudness: list[dict], out_path: Path, work: Path, rep: Reporter,
                 voiceover_wav: Path | None = None, vo_dur: float = 0.0, layout: dict | None = None,
-                extras: dict | None = None) -> Path:
+                extras: dict | None = None, crf: int = 21, audio_bitrate: str = "160k",
+                audio_post: str = "") -> Path:
     """Render clip["start"]..clip["end"] (absolute source seconds) to out_path.
 
     source_offset: the absolute time that `source` starts at (0 for the full video, or the start
     of a downloaded section when re-rendering after the full video was deleted).
     extras: optional plan from project.extras_plan (teaser, banner, callouts, end card).
+    clip["mute"]: [[start, end], ...] source-time ranges to silence (e.g. a slur), kept on re-render.
+    crf / audio_bitrate / audio_post: encode settings and a final audio filter (e.g. loudnorm).
     """
     # ffmpeg runs with cwd=work (for the ASS path), so every other path must be absolute.
     work, source, out_path = Path(work).resolve(), Path(source).resolve(), Path(out_path).resolve()
@@ -260,7 +289,8 @@ def render_clip(*, source: Path, source_offset: float, clip: dict, words: list[l
     graph = build_filtergraph(layout, punches, profile.get("zoom", {}), src_w=src_w, src_h=src_h,
                               vo=vo, vo_dur=vo_dur, vo_cfg=profile.get("voiceover", {}), audio=audio,
                               ex={"teaser_input": teaser_input, "pre": pre, "post": post, "dur": dur,
-                                  "thumb_input": thumb_input, "vo_input": vo_input})
+                                  "thumb_input": thumb_input, "vo_input": vo_input,
+                                  "mutes": mute_ranges(clip, pre, teaser), "audio_post": audio_post})
     (work / "graph.txt").write_text(graph, encoding="utf-8")
 
     tmp_out = out_path.with_name(out_path.stem + ".part.mp4")
@@ -268,8 +298,8 @@ def render_clip(*, source: Path, source_offset: float, clip: dict, words: list[l
     for part in inputs:
         cmd += part
     cmd += ["-/filter_complex", "graph.txt", "-map", "[v]", "-map", "[a]",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-profile:v", "high",
-            "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", str(int(crf)), "-profile:v", "high",
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", audio_bitrate, "-ar", "48000", "-movflags", "+faststart",
             "-t", f"{total:.3f}", str(tmp_out)]
 
     import subprocess
