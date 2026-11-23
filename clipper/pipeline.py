@@ -25,6 +25,26 @@ class JobConfig:
     keep_source: bool = False
     max_clips: int = 20
     claude_model: str = ""
+    extras: bool = False         # teaser, context banner, callouts, end card
+
+
+def _save_thumbnail(info: dict, folder: Path, rep: Reporter) -> str | None:
+    """Save the video's thumbnail next to the clips (used by the end card). Returns the file name."""
+    import urllib.request
+    url = info.get("thumbnail")
+    if not url:
+        return None
+    ext = url.split("?")[0].rsplit(".", 1)[-1].lower()
+    ext = ext if ext in ("jpg", "jpeg", "png", "webp") else "jpg"
+    dest = folder / f"thumbnail.{ext}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            dest.write_bytes(r.read())
+        return dest.name
+    except OSError as e:
+        rep.log(f"Couldn't fetch the video thumbnail ({e}); end cards will be skipped.")
+        return None
 
 
 def preflight(rep: Reporter, claude_model: str = "") -> None:
@@ -97,13 +117,20 @@ def run_job(cfg: JobConfig, rep: Reporter) -> Path:
     if length["from_rules"]:
         rep.log(f"Campaign rules set clip length to {length['min']:.0f}-{length['max']:.0f} s "
                 f"(found: {'; '.join(length['from_rules'])}).")
-    clips = rank.rank(title=title, transcript=tr, signals=sig, profile=profile, length=length, rules=cfg.rules,
-                      duration=duration, rep=rep, cache=work / "ranking.json", max_clips=cfg.max_clips,
-                      model=cfg.claude_model)
+    rank_length = length
+    if cfg.extras:
+        # Leave room for the teaser and end card so the finished clip still fits the limit.
+        room = project.TEASER_LEN + project.END_CARD_LEN
+        if length["max"] - room >= length["min"] + 5:
+            rank_length = dict(length, max=length["max"] - room, target=min(length["target"], length["max"] - room))
+    clips = rank.rank(title=title, transcript=tr, signals=sig, profile=profile, length=rank_length,
+                      rules=cfg.rules, duration=duration, rep=rep, cache=work / "ranking.json",
+                      max_clips=cfg.max_clips, model=cfg.claude_model)
 
     # ---- 5/6. render (+ voiceover)
     folder = project.output_folder(out_base, title, vid)
     shutil.copyfile(work / "transcript.json", folder / "transcript.json")
+    thumb_name = _save_thumbnail(info, folder, rep)
     vo_on = bool(profile.get("voiceover", {}).get("enabled"))
     proj = {
         "app": "Clipper", "version": 1, "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -112,13 +139,17 @@ def run_job(cfg: JobConfig, rep: Reporter) -> Path:
         "profile": {k: v for k, v in profile.items() if not k.startswith("_")},
         "profile_id": profile.get("_id"), "rules": cfg.rules, "length": length,
         "signals": {"loudness": sig["loudness"], "chat": sig["chat"]},
-        "source_path": None, "clips": [],
+        "source_path": None, "clips": [], "extras": bool(cfg.extras), "thumbnail": thumb_name,
         "_folder": str(folder),
     }
     for c in clips:
         c["voiceover"] = vo_on and bool(c.get("intro_line"))
         proj["clips"].append(c)
     project.save(proj)
+    if profile.get("layout", {}).get("mode", "blur") != "blur":
+        rep.log("Looking for the facecam in each clip...")
+        project.detect_facecams(proj, src, 0.0, rep)
+        project.save(proj)
 
     rep.log(f"Rendering {len(clips)} clip(s) to {folder} ...")
     n = len(clips)

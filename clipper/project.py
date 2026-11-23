@@ -118,12 +118,14 @@ def render_one(proj: dict, clip: dict, rep: Reporter, source: Path | None = None
                                  profile["voiceover"].get("speed", 1.0), rep)
 
     layout = effective_layout(proj, clip, source, source_offset, rep)
+    plan = extras_plan(proj, clip)
     new_name = clip_filename(clip)
     old = clip.get("file")
     out = folder / new_name
     render.render_clip(source=source, source_offset=source_offset, clip=clip, words=words_of(proj),
                        profile=profile, loudness=proj.get("signals", {}).get("loudness", []),
-                       out_path=out, work=work, rep=rep, voiceover_wav=vo_wav, vo_dur=vo_dur, layout=layout)
+                       out_path=out, work=work, rep=rep, voiceover_wav=vo_wav, vo_dur=vo_dur, layout=layout,
+                       extras=plan)
     if old and old != new_name:
         (folder / old).unlink(missing_ok=True)
     clip["file"] = new_name
@@ -133,17 +135,51 @@ def render_one(proj: dict, clip: dict, rep: Reporter, source: Path | None = None
     return out
 
 
-LAYOUTS = {"auto": "Auto (facecam split if found)", "split": "Facecam split", "blur": "Blurred background"}
+LAYOUTS = {
+    "overlay": "Facecam corner (original size)",
+    "auto": "Facecam on top (big)",
+    "split": "Facecam on top (forced)",
+    "blur": "Blurred background, no facecam",
+}
+
+
+def detect_facecams(proj: dict, source: Path, source_offset: float, rep: Reporter) -> None:
+    """Look for the facecam in every clip first, so clips where detection misses can use the
+    position found in the rest of the video (a streamer's cam rarely moves during a VOD)."""
+    w, h = render.probe_size(source)
+    for c in proj["clips"]:
+        if "facecam_box" not in c:
+            c["facecam_box"] = facecam.detect(source, c["start"] - source_offset, c["end"] - source_offset,
+                                              w, h, rep) or False
+    found = sum(1 for c in proj["clips"] if c.get("facecam_box"))
+    rep.log(f"Facecam found in {found} of {len(proj['clips'])} clip(s).")
+
+
+def video_facecam(proj: dict, exclude: dict | None = None) -> dict | None:
+    """The facecam box the video's clips agree on, or None.
+
+    Needs at least 2 detections covering half the clips, most within a few percent of the median."""
+    others = [c for c in proj.get("clips", []) if c is not exclude]
+    boxes = [c["facecam_box"] for c in others if c.get("facecam_box")]
+    if len(boxes) < 2 or len(boxes) < 0.5 * max(1, len(others)):
+        return None
+    med = {k: float(np.median([b[k] for b in boxes])) for k in ("x", "y", "w", "h")}
+    mcx, mcy = med["x"] + med["w"] / 2, med["y"] + med["h"] / 2
+    agree = [b for b in boxes if abs(b["x"] + b["w"] / 2 - mcx) < 0.06 and abs(b["y"] + b["h"] / 2 - mcy) < 0.06]
+    return med if len(agree) >= 0.75 * len(boxes) else None
 
 
 def effective_layout(proj: dict, clip: dict, source: Path, source_offset: float, rep: Reporter) -> dict:
     """Layout for this clip. Per-clip choice ("layout") overrides the profile's mode.
 
-    auto  -> split with the detected facecam, else blurred background
-    split -> split with the detected facecam, else the profile's manual facecam box
-    blur  -> blurred background
+    overlay -> facecam kept at its original size in its original corner, gameplay in the middle
+    auto    -> facecam enlarged on top, gameplay below
+    split   -> like auto, but forced even when no facecam was detected in this clip
+    blur    -> whole frame on a blurred background
+    overlay/auto fall back to the cam position agreed by the video's other clips, then to blur.
     """
     base = dict(proj["profile"]["layout"])
+    forced = bool(clip.get("layout"))
     choice = clip.get("layout") or base.get("mode", "blur")
     if choice not in LAYOUTS:
         choice = "blur"
@@ -154,26 +190,72 @@ def effective_layout(proj: dict, clip: dict, source: Path, source_offset: float,
         w, h = render.probe_size(source)
         clip["facecam_box"] = facecam.detect(source, clip["start"] - source_offset, clip["end"] - source_offset,
                                              w, h, rep) or False
-        rep.log(f"Clip {clip['rank']}: {facecam.describe(clip['facecam_box'] or None)}.")
+    mode = "overlay" if choice == "overlay" else "split"
     box = clip["facecam_box"]
     if box:
-        clip["layout_used"] = "split"
-        return dict(base, mode="split", facecam={k: box[k] for k in ("x", "y", "w", "h")})
-    if choice == "split":
-        # Forced split without a detection here: the cam is usually in the same place all video,
-        # so use where it was found in this video's other clips, before the profile's fixed box.
+        clip["layout_used"] = mode
+        rep.log(f"Clip {clip['rank']}: {facecam.describe(box)}.")
+        return dict(base, mode=mode, facecam={k: box[k] for k in ("x", "y", "w", "h")})
+    vbox = video_facecam(proj, exclude=clip)
+    if vbox is None and forced:
         others = [c["facecam_box"] for c in proj.get("clips", []) if c is not clip and c.get("facecam_box")]
         if others:
-            med = {k: float(np.median([b[k] for b in others])) for k in ("x", "y", "w", "h")}
-            clip["layout_used"] = "split (facecam position from other clips)"
-            return dict(base, mode="split", facecam=med)
+            vbox = {k: float(np.median([b[k] for b in others])) for k in ("x", "y", "w", "h")}
+    if vbox:
+        clip["layout_used"] = f"{mode} (facecam position from the rest of the video)"
+        rep.log(f"Clip {clip['rank']}: facecam not seen here; using its position from the rest of the video.")
+        return dict(base, mode=mode, facecam=vbox)
+    rep.log(f"Clip {clip['rank']}: no facecam found.")
+    if choice == "split":
         clip["layout_used"] = "split (profile box)"
         return dict(base, mode="split")
     return dict(base, mode="blur")
 
 
+# ------------------------------------------------------------------ extras
+
+TEASER_LEN = 1.4
+END_CARD_LEN = 1.8
+
+
+def extras_on(proj: dict, clip: dict) -> bool:
+    return bool(clip["extras"]) if "extras" in clip else bool(proj.get("extras", False))
+
+
+def extras_plan(proj: dict, clip: dict) -> dict | None:
+    """What extra elements this clip gets, fitted inside the clip-length limit (end card goes first)."""
+    if not extras_on(proj, clip):
+        return None
+    start, end = float(clip["start"]), float(clip["end"])
+    dur = end - start
+    max_len = float(proj.get("length", {}).get("max", 60))
+    plan: dict = {"pre": 0.0, "post": 0.0, "teaser": None}
+    # Teaser: flash-forward to the loudest moment (not in the first 4 s: that's already the opening).
+    spikes = [x for x in proj.get("signals", {}).get("loudness", []) if start + 4 <= x["t"] <= end - 0.5]
+    if spikes:
+        peak = max(spikes, key=lambda x: x["z"])["t"] - start
+        ts = max(0.0, peak - 0.9)
+        plan.update(teaser=(round(ts, 3), round(min(dur, ts + TEASER_LEN), 3)), pre=TEASER_LEN,
+                    teaser_text="WAIT FOR IT...")
+    # End card: the video's thumbnail and where to find the full video.
+    thumb = proj.get("thumbnail")
+    if thumb and (Path(proj["_folder"]) / thumb).exists():
+        uploader = proj["video"].get("uploader") or ""
+        title = proj["video"]["title"]
+        plan.update(post=END_CARD_LEN, thumb=str(Path(proj["_folder"]) / thumb),
+                    end_lines=["Watch the full stream", f"{uploader}: {title}" if uploader else title])
+    if dur + plan["pre"] + plan["post"] > max_len + 0.01:
+        plan.update(post=0.0)
+    if dur + plan["pre"] + plan["post"] > max_len + 0.01:
+        plan.update(pre=0.0, teaser=None)
+    plan["banner"] = clip.get("context") or ""
+    plan["callouts"] = [(float(t) - start, txt) for t, txt in clip.get("callouts", [])
+                        if start + 3.2 <= float(t) <= end - 0.8]
+    return plan
+
+
 def edit_clip(proj: dict, clip: dict, *, start=None, end=None, hook_text=None, caption_lines=None,
-              voiceover_on=None, intro_line=None, layout=None) -> None:
+              voiceover_on=None, intro_line=None, layout=None, extras=None) -> None:
     """Apply GUI edits. Changing start/end rebuilds captions from the transcript."""
     if start is not None or end is not None:
         s = float(start if start is not None else clip["start"])
@@ -204,6 +286,8 @@ def edit_clip(proj: dict, clip: dict, *, start=None, end=None, hook_text=None, c
         clip["intro_line"] = intro_line.strip()
     if layout is not None and layout in LAYOUTS:
         clip["layout"] = layout
+    if extras is not None:
+        clip["extras"] = bool(extras)
 
 
 def delete_clip(proj: dict, clip: dict) -> None:
@@ -227,6 +311,7 @@ def write_reports(proj: dict) -> None:
             "hook_text": c.get("hook_text", ""), "title": c.get("title", ""), "reason": c.get("reason", ""),
             "voiceover": bool(c.get("voiceover")), "intro_line": c.get("intro_line", ""),
             "layout": c.get("layout_used", ""), "facecam": c.get("facecam_box") or None,
+            "extras": extras_on(proj, c), "context": c.get("context", ""), "callouts": c.get("callouts", []),
             "source_link": _link_at(v["url"], c["start"]),
             **({"claude_suggested": [fmt_precise(x) for x in c["suggested"]]} if c.get("suggested") else {}),
             **({"error": c["error"]} if c.get("error") else {}),

@@ -169,46 +169,60 @@ def transcribe(audio: Path, out_json: Path, duration: float, model_name: str, re
         if i in done:
             continue
         rep.check()
-        samples = load_wav_float(audio, a, b)
-        try:
-            segments_iter, info = model.transcribe(
-                samples,
-                language=lang,
-                language_detection_segments=6,  # intros are often music; don't decide from 30 s
-                language_detection_threshold=0.6,
-                word_timestamps=True,
-                # VAD is fast but drops shouted/noisy gameplay speech, so it's a per-profile choice.
-                vad_filter=vad,
-                vad_parameters={"min_silence_duration_ms": 500} if vad else None,
-                hallucination_silence_threshold=None if vad else 2.0,
-                beam_size=5 if device == "cuda" else 1,
-                temperature=0.0 if device == "cpu" else [0.0, 0.2, 0.4],  # fallbacks are slow on CPU
-                condition_on_previous_text=False,
-            )
-            segs = []
-            for seg in segments_iter:
-                rep.check()
-                words = [[round(a + float(w.start), 2), round(a + float(w.end), 2), w.word.strip()]
-                         for w in (seg.words or []) if w.word.strip()]
-                segs.append({"start": round(a + float(seg.start), 2), "end": round(a + float(seg.end), 2),
-                             "text": seg.text.strip(), "words": words})
-                frac = (a + float(seg.end)) / duration
-                rep.progress("transcribe", frac)
-                now = time.monotonic()
-                if now - last_log > 60:
-                    last_log = now
-                    el = now - t0
-                    pos = a + float(seg.end)
-                    rate = max(pos - resumed_s, 1.0) / el          # audio seconds per wall second
-                    left = (duration - pos) / rate
-                    rep.log(f"Transcribed {_hms(a + seg.end)} of {_hms(duration)} (about {_hms(left)} left).")
-        except (MemoryError, RuntimeError) as e:
-            if isinstance(e, RuntimeError) and "alloc" not in str(e).lower() and "memory" not in str(e).lower():
-                raise
-            raise ClipperError(
-                f"Ran out of memory while transcribing ({free_ram_gb():.1f} GB of RAM free).",
-                "Close browsers and other programs, or pick a smaller Whisper model in Settings "
-                "(base uses about half the memory of small). Start again to resume where it stopped.") from e
+        segs = info = None
+        for attempt in range(OOM_RETRIES + 1):
+            try:
+                samples = load_wav_float(audio, a, b)
+                segments_iter, info = model.transcribe(
+                    samples,
+                    language=lang,
+                    language_detection_segments=6,  # intros are often music; don't decide from 30 s
+                    language_detection_threshold=0.6,
+                    word_timestamps=True,
+                    # VAD is fast but drops shouted/noisy gameplay speech, so it's a per-profile choice.
+                    vad_filter=vad,
+                    vad_parameters={"min_silence_duration_ms": 500} if vad else None,
+                    hallucination_silence_threshold=None if vad else 2.0,
+                    beam_size=5 if device == "cuda" else 1,
+                    temperature=0.0 if device == "cpu" else [0.0, 0.2, 0.4],  # fallbacks are slow on CPU
+                    condition_on_previous_text=False,
+                )
+                segs = []
+                for seg in segments_iter:
+                    rep.check()
+                    words = [[round(a + float(w.start), 2), round(a + float(w.end), 2), w.word.strip()]
+                             for w in (seg.words or []) if w.word.strip()]
+                    segs.append({"start": round(a + float(seg.start), 2), "end": round(a + float(seg.end), 2),
+                                 "text": seg.text.strip(), "words": words})
+                    frac = (a + float(seg.end)) / duration
+                    rep.progress("transcribe", frac)
+                    now = time.monotonic()
+                    if now - last_log > 60:
+                        last_log = now
+                        el = now - t0
+                        pos = a + float(seg.end)
+                        rate = max(pos - resumed_s, 1.0) / el          # audio seconds per wall second
+                        left = (duration - pos) / rate
+                        rep.log(f"Transcribed {_hms(a + seg.end)} of {_hms(duration)} (about {_hms(left)} left).")
+                break
+            except (MemoryError, RuntimeError) as e:
+                if isinstance(e, RuntimeError) and "alloc" not in str(e).lower() and "memory" not in str(e).lower():
+                    raise
+                samples = segments_iter = None
+                import gc
+                gc.collect()
+                if attempt < OOM_RETRIES:
+                    wait = 20 * (attempt + 1)
+                    rep.log(f"Low on memory ({free_ram_gb():.1f} GB free) at {_hms(a)}; retrying this part "
+                            f"in {wait} s ({attempt + 1}/{OOM_RETRIES})...")
+                    for _ in range(wait):
+                        rep.check()
+                        time.sleep(1)
+                    continue
+                raise ClipperError(
+                    f"Ran out of memory while transcribing ({free_ram_gb():.1f} GB of RAM free).",
+                    "Close browsers and other programs, or pick a smaller Whisper model in Settings "
+                    "(base uses about half the memory of small). Start again to resume where it stopped.") from e
         if lang is None and info.language_probability >= 0.5:
             lang, lang_prob = info.language, info.language_probability  # keep it for later pieces
             rep.log(f"Language: {lang} ({lang_prob:.0%}).")
@@ -227,7 +241,8 @@ def transcribe(audio: Path, out_json: Path, duration: float, model_name: str, re
     return data
 
 
-PIECE = 600.0     # seconds of audio handed to Whisper at a time (bounds memory on 4 h videos)
+PIECE = 300.0     # seconds of audio handed to Whisper at a time (bounds memory on 4 h videos)
+OOM_RETRIES = 3   # a piece that runs out of memory is retried after a pause
 SEARCH = 20.0     # look this far either side of each boundary for the quietest moment
 
 

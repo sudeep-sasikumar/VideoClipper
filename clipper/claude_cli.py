@@ -29,7 +29,9 @@ def ask(prompt: str, model: str = "", timeout: int = 900, system: str = SYSTEM) 
     if model:
         cmd += ["--model", model]
     try:
-        with tempfile.TemporaryDirectory(prefix="clipper_claude_") as cwd:  # no project CLAUDE.md
+        from .paths import TMP_DIR
+        TMP_DIR.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="clipper_claude_", dir=TMP_DIR) as cwd:  # no project CLAUDE.md
             proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",
                                   errors="replace", timeout=timeout, cwd=cwd, creationflags=NO_WINDOW)
     except FileNotFoundError as e:

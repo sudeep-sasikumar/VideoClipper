@@ -12,3 +12,4 @@ _temp/
 .claude/
 dist_new/
 build_new/
+data/

@@ -11,6 +11,7 @@ from .events import Reporter
 from .tools import find_ffmpeg, run
 
 W, H, FPS = 1080, 1920, 30
+REF_W = 1920  # facecam size is kept as it looks in a 1080p frame (native size for 1080p sources)
 
 
 def has_audio(path: Path) -> bool:
@@ -47,11 +48,42 @@ def _zoom_expr(punches: list[float], amount: float, length: float) -> str:
     return f"1+{amount:.3f}*min(1,{'+'.join(terms)})"
 
 
+def overlay_geometry(layout: dict, src_w: int = 1920, src_h: int = 1080) -> dict:
+    """Where things go in the 'overlay' layout (gameplay band + facecam in its original corner)."""
+    gh = int(round(H * float(layout.get("overlay_game_ratio", 0.70)) / 2) * 2)
+    top = (H - gh) // 2
+    fc = layout.get("facecam", {})
+    cw = int(round(min(float(fc.get("w", 0.22)) * REF_W * float(layout.get("cam_scale", 1.0)), W * 0.55) / 2) * 2)
+    ch = int(round(cw * (float(fc.get("h", 0.22)) * src_h) / (float(fc.get("w", 0.22)) * src_w) / 2) * 2)
+    m = 20
+    right = float(fc.get("x", 0.78)) + float(fc.get("w", 0.22)) / 2 > 0.5
+    bottom = float(fc.get("y", 0.0)) + float(fc.get("h", 0.22)) / 2 > 0.5
+    x = W - cw - m - 8 if right else m
+    y = top + gh - ch - m - 8 if bottom else top + m
+    return {"game_h": gh, "top": top, "cam_w": cw, "cam_h": ch, "cam_x": x, "cam_y": y}
+
+
 def build_filtergraph(layout: dict, punches: list[float], zoom: dict, *, src_w: int, src_h: int,
-                      vo: bool, vo_dur: float, vo_cfg: dict, audio: bool) -> str:
+                      vo: bool, vo_dur: float, vo_cfg: dict, audio: bool, ex: dict | None = None) -> str:
+    """ex (extras): {"teaser_input": idx | None, "pre": s, "post": s, "dur": s, "thumb_input": idx | None,
+    "vo_input": idx}. The teaser comes from its own input (seeked straight to the peak moment), so
+    ffmpeg never has to hold the frames in between in memory."""
+    ex = ex or {}
+    pre, post, dur = float(ex.get("pre", 0)), float(ex.get("post", 0)), float(ex.get("dur", 0))
     mode = layout.get("mode", "blur")
-    g = [f"[0:v]fps={FPS},setsar=1,split=2[a0][b0]"]
+    g = []
+
+    # ---- source video (+ teaser: a flash-forward of the peak moment before the clip starts)
+    tin = ex.get("teaser_input")
+    if tin is not None:
+        g.append(f"[{tin}:v]fps={FPS},setsar=1,setpts=PTS-STARTPTS[vt]")
+        g.append(f"[0:v]fps={FPS},setsar=1,setpts=PTS-STARTPTS[vm]")
+        g.append("[vt][vm]concat=n=2:v=1:a=0[vin]")
+    else:
+        g.append(f"[0:v]fps={FPS},setsar=1[vin]")
+
     if mode == "split":
+        g.append("[vin]split=2[a0][b0]")
         top_h = int(round(H * float(layout.get("split_top_ratio", 0.38)) / 2) * 2)
         bot_h = H - top_h
         fc = layout.get("facecam", {})
@@ -61,7 +93,20 @@ def build_filtergraph(layout: dict, punches: list[float], zoom: dict, *, src_w: 
                  f"scale={W}:{top_h}:force_original_aspect_ratio=increase,crop={W}:{top_h}[top]")
         g.append(f"[b0]scale={W}:{bot_h}:force_original_aspect_ratio=increase,crop={W}:{bot_h}[bot]")
         g.append("[top][bot]vstack=inputs=2[base]")
+    elif mode == "overlay":
+        geo = overlay_geometry(layout, src_w, src_h)
+        fc = layout.get("facecam", {})
+        g.append("[vin]split=3[a0][b0][c0]")
+        g.append(f"[a0]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,"
+                 f"boxblur=12:2,eq=brightness=-0.10:saturation=1.1,scale={W}:{H}[bg]")
+        g.append(f"[b0]scale={W}:{geo['game_h']}:force_original_aspect_ratio=increase,crop={W}:{geo['game_h']}[game]")
+        g.append(f"[c0]crop=iw*{float(fc['w']):.4f}:ih*{float(fc['h']):.4f}:iw*{float(fc['x']):.4f}:"
+                 f"ih*{float(fc['y']):.4f},scale={geo['cam_w']}:{geo['cam_h']},"
+                 f"pad=iw+8:ih+8:4:4:color=white[cam]")
+        g.append(f"[bg][game]overlay=0:{geo['top']}[bg2]")
+        g.append(f"[bg2][cam]overlay={geo['cam_x']}:{geo['cam_y']}[base]")
     else:
+        g.append("[vin]split=2[a0][b0]")
         fz = max(1.0, float(layout.get("foreground_zoom", 1.0)))
         fg_w = int(round(W * fz / 2) * 2)
         # Blurred cover background, computed small for speed then scaled up.
@@ -72,44 +117,76 @@ def build_filtergraph(layout: dict, punches: list[float], zoom: dict, *, src_w: 
             fg += f",crop={W}:min(ih\\,{H})"
         g.append(fg + "[fg]")
         g.append("[bg][fg]overlay=(W-w)/2:(H-h)/2[base]")
-    if punches:
-        expr = _zoom_expr(punches, float(zoom.get("amount", 0.08)), float(zoom.get("length", 0.7)))
-        g.append(f"[base]zoompan=z='{expr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:"
-                 f"s={W}x{H}:fps={FPS}[zbase]")
-        base = "zbase"
-    else:
-        base = "base"
-    g.append(f"[{base}]ass=captions.ass,setsar=1,format=yuv420p[v]")
 
-    # Audio
-    a_in = "[0:a]" if audio else "[sil]"
-    if not audio:
-        g.append("anullsrc=r=48000:cl=stereo[sil]")
+    cur = "base"
+    # End card part 1: hold the last frame. This must come before zoompan: after a teaser concat,
+    # zoompan's output doesn't let tpad extend the stream.
+    if post > 0:
+        g.append(f"[{cur}]tpad=stop_mode=clone:stop_duration={post:.3f}[held0]")
+        cur = "held0"
+    if punches:
+        expr = _zoom_expr([p + pre for p in punches], float(zoom.get("amount", 0.08)), float(zoom.get("length", 0.7)))
+        g.append(f"[{cur}]zoompan=z='{expr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:"
+                 f"s={W}x{H}:fps={FPS}[zb]")
+        cur = "zb"
+
+    # ---- end card part 2: darken the held frame, show the video's thumbnail
+    if post > 0:
+        t0 = pre + dur
+        g.append(f"[{cur}]drawbox=x=0:y=0:w=iw:h=ih:color=black@0.6:t=fill:enable='gte(t,{t0:.3f})'[held]")
+        cur = "held"
+        if ex.get("thumb_input") is not None:
+            g.append(f"[{ex['thumb_input']}:v]scale=760:-2,pad=iw+12:ih+12:6:6:color=white,setsar=1[th]")
+            g.append(f"[{cur}][th]overlay=(W-w)/2:{int(H * 0.30)}:enable='gte(t,{t0:.3f})'[endc]")
+            cur = "endc"
+    g.append(f"[{cur}]ass=captions.ass,setsar=1,format=yuv420p[v]")
+
+    # ---- audio
+    if audio:
+        if tin is not None:
+            g.append(f"[{tin}:a]aresample=48000,asetpts=PTS-STARTPTS[at]")
+            g.append("[0:a]aresample=48000,asetpts=PTS-STARTPTS[am]")
+            g.append("[at][am]concat=n=2:v=0:a=1[ain]")
+        else:
+            g.append("[0:a]anull[ain]")
+    else:
+        g.append("anullsrc=r=48000:cl=stereo[ain]")
     if vo:
         delay = 0.25
         duck = float(vo_cfg.get("duck", 0.35))
         vol = float(vo_cfg.get("volume", 1.0))
         a, b = delay, delay + vo_dur
-        g.append(f"{a_in}aresample=48000,volume='if(between(t,{a:.2f},{b:.2f}),{duck},1)':eval=frame[orig]")
-        g.append(f"[1:a]aresample=48000,aformat=channel_layouts=stereo,volume={vol},"
+        g.append(f"[ain]aresample=48000,volume='if(between(t,{a:.2f},{b:.2f}),{duck},1)':eval=frame[orig]")
+        g.append(f"[{ex.get('vo_input', 1)}:a]aresample=48000,aformat=channel_layouts=stereo,volume={vol},"
                  f"adelay={int(delay * 1000)}:all=1[vo]")
-        g.append("[orig][vo]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[a]")
+        g.append("[orig][vo]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[amix]")
     else:
-        g.append(f"{a_in}aresample=48000,alimiter=limit=0.95[a]")
+        g.append("[ain]aresample=48000,alimiter=limit=0.95[amix]")
+    if post > 0:
+        t0 = pre + dur
+        g.append(f"[amix]apad=pad_dur={post:.3f},afade=t=out:st={max(0.0, t0 - 0.4):.3f}:d={post + 0.4:.3f}[a]")
+    else:
+        g.append("[amix]anull[a]")
     return ";\n".join(g)
 
 
 def text_positions(profile: dict, layout: dict) -> tuple[dict, dict]:
     """Caption and hook styles with positions that suit the layout.
 
-    Split layout: the hook sits on the seam between facecam and gameplay (never over the face) and
-    captions sit in the gameplay half. Profiles can override with "split_position_y".
+    Split: the hook sits on the seam between facecam and gameplay (never over the face) and captions
+    sit in the gameplay half. Overlay: the hook sits in the band above the gameplay.
+    Profiles can override with "split_position_y" / "overlay_position_y".
     """
     cap, hook = dict(profile["captions"]), dict(profile["hook"])
-    if layout.get("mode") == "split":
+    mode = layout.get("mode")
+    if mode == "split":
         seam = float(layout.get("split_top_ratio", 0.38))
         hook["position_y"] = float(hook.get("split_position_y", seam))
         cap["position_y"] = float(cap.get("split_position_y", max(seam + 0.25, 0.66)))
+    elif mode == "overlay":
+        band = (1 - float(layout.get("overlay_game_ratio", 0.70))) / 2
+        hook["position_y"] = float(hook.get("overlay_position_y", band / 2))
+        cap["position_y"] = float(cap.get("overlay_position_y", cap.get("position_y", 0.72)))
     return cap, hook
 
 
@@ -125,11 +202,13 @@ def probe_size(path: Path) -> tuple[int, int]:
 
 def render_clip(*, source: Path, source_offset: float, clip: dict, words: list[list], profile: dict,
                 loudness: list[dict], out_path: Path, work: Path, rep: Reporter,
-                voiceover_wav: Path | None = None, vo_dur: float = 0.0, layout: dict | None = None) -> Path:
+                voiceover_wav: Path | None = None, vo_dur: float = 0.0, layout: dict | None = None,
+                extras: dict | None = None) -> Path:
     """Render clip["start"]..clip["end"] (absolute source seconds) to out_path.
 
     source_offset: the absolute time that `source` starts at (0 for the full video, or the start
     of a downloaded section when re-rendering after the full video was deleted).
+    extras: optional plan from project.extras_plan (teaser, banner, callouts, end card).
     """
     # ffmpeg runs with cwd=work (for the ASS path), so every other path must be absolute.
     work, source, out_path = Path(work).resolve(), Path(source).resolve(), Path(out_path).resolve()
@@ -142,52 +221,78 @@ def render_clip(*, source: Path, source_offset: float, clip: dict, words: list[l
     if shutil.disk_usage(out_path.parent if out_path.parent.exists() else work).free < 300_000_000:
         raise DiskSpaceError("Less than 300 MB free; not enough to render clips.")
 
+    ex = dict(extras or {})
+    pre = float(ex.get("pre", 0.0))
+    post = float(ex.get("post", 0.0))
+    thumb = Path(ex["thumb"]).resolve() if post > 0 and ex.get("thumb") and Path(ex["thumb"]).exists() else None
+    total = pre + dur + post
+
     lines = clip.get("captions") or captions.build_lines(
         words, start, end, int(profile["captions"].get("words_per_line", 3)))
     clip["captions"] = lines
     layout = layout or profile["layout"]
     cap_style, hook_style = text_positions(profile, layout)
+    extra_styles, extra_events = captions.extra_events(ex, layout_mode=layout.get("mode", "blur"),
+                                                      hook_style=hook_style, dur=dur) if ex else ([], [])
     captions.write_ass(work / "captions.ass", lines=lines, clip_start=start, clip_end=end,
-                       cap_style=cap_style, hook_text=clip.get("hook_text", ""), hook_style=hook_style)
+                       cap_style=cap_style, hook_text=clip.get("hook_text", ""), hook_style=hook_style,
+                       offset=pre, total=total, extra_styles=extra_styles, extra_events=extra_events)
 
     punches = pick_punches(loudness, start, end, profile.get("zoom", {}))
     src_w, src_h = probe_size(source)
     audio = has_audio(source)
     vo = voiceover_wav is not None and voiceover_wav.exists() and clip.get("voiceover", False)
+    teaser = ex.get("teaser") if pre > 0 else None
+    inputs = [["-ss", f"{max(0.0, start - source_offset):.3f}", "-t", f"{dur:.3f}", "-i", str(source)]]
+    teaser_input = vo_input = thumb_input = None
+    if teaser:
+        ts, te = teaser
+        teaser_input = len(inputs)
+        inputs.append(["-ss", f"{max(0.0, start - source_offset + ts):.3f}", "-t", f"{te - ts:.3f}",
+                       "-i", str(source)])
+    if vo:
+        vo_input = len(inputs)
+        inputs.append(["-i", str(voiceover_wav)])
+    if thumb:
+        thumb_input = len(inputs)
+        inputs.append(["-i", str(thumb)])
     graph = build_filtergraph(layout, punches, profile.get("zoom", {}), src_w=src_w, src_h=src_h,
-                              vo=vo, vo_dur=vo_dur, vo_cfg=profile.get("voiceover", {}), audio=audio)
+                              vo=vo, vo_dur=vo_dur, vo_cfg=profile.get("voiceover", {}), audio=audio,
+                              ex={"teaser_input": teaser_input, "pre": pre, "post": post, "dur": dur,
+                                  "thumb_input": thumb_input, "vo_input": vo_input})
     (work / "graph.txt").write_text(graph, encoding="utf-8")
 
     tmp_out = out_path.with_name(out_path.stem + ".part.mp4")
-    cmd = [find_ffmpeg(), "-y", "-hide_banner", "-v", "error", "-stats_period", "1", "-progress", "pipe:1",
-           "-ss", f"{max(0.0, start - source_offset):.3f}", "-t", f"{dur:.3f}", "-i", str(source)]
-    if vo:
-        cmd += ["-i", str(voiceover_wav)]
+    cmd = [find_ffmpeg(), "-y", "-hide_banner", "-v", "error", "-stats_period", "1", "-progress", "pipe:1"]
+    for part in inputs:
+        cmd += part
     cmd += ["-/filter_complex", "graph.txt", "-map", "[v]", "-map", "[a]",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-profile:v", "high",
             "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart",
-            "-t", f"{dur:.3f}", str(tmp_out)]
+            "-t", f"{total:.3f}", str(tmp_out)]
 
     import subprocess
     from .tools import NO_WINDOW
-    proc = subprocess.Popen(cmd, cwd=str(work), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                            encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
-    try:
-        for line in proc.stdout:
-            if rep.cancelled:
+    log_path = work / "ffmpeg.log"
+    with open(log_path, "w", encoding="utf-8", errors="replace") as log_f:  # a file never blocks ffmpeg
+        proc = subprocess.Popen(cmd, cwd=str(work), stdout=subprocess.PIPE, stderr=log_f, text=True,
+                                encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
+        try:
+            for line in proc.stdout:
+                if rep.cancelled:
+                    proc.kill()
+                    break
+                if line.startswith("out_time_us="):
+                    try:
+                        t = int(line.split("=", 1)[1]) / 1e6
+                        clip["_render_frac"] = min(1.0, t / total)
+                    except ValueError:
+                        pass
+            proc.wait()
+        finally:
+            if proc.poll() is None:
                 proc.kill()
-                break
-            if line.startswith("out_time_us="):
-                try:
-                    t = int(line.split("=", 1)[1]) / 1e6
-                    clip["_render_frac"] = min(1.0, t / dur)
-                except ValueError:
-                    pass
-        err = proc.stderr.read()
-        proc.wait()
-    finally:
-        if proc.poll() is None:
-            proc.kill()
+    err = log_path.read_text(encoding="utf-8", errors="replace")
     rep.check()
     if proc.returncode != 0:
         tmp_out.unlink(missing_ok=True)

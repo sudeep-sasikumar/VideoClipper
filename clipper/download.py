@@ -10,6 +10,7 @@ from yt_dlp.utils import DownloadCancelled, DownloadError, ExtractorError, downl
 
 from .errors import BadLinkError, Cancelled, ClipperError, DiskSpaceError, ToolMissingError
 from .events import Reporter
+from .paths import CACHE_DIR
 from .tools import check_disk, ffmpeg_dir, is_disk_full, js_runtimes
 
 URL_RE = re.compile(r"^https?://\S+$", re.I)
@@ -49,6 +50,7 @@ def _base_opts(rep: Reporter) -> dict:
         "retries": 5,
         "fragment_retries": 10,
         "socket_timeout": 30,
+        "cachedir": str(CACHE_DIR / "yt-dlp"),
     }
 
 

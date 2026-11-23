@@ -46,7 +46,7 @@ D:\Clipper\output\[video title]\      (change the folder in Settings -> Output f
 
 ### Run the packaged app
 
-Open `dist\Clipper\Clipper.exe`. On first use it downloads the models into `%APPDATA%\Clipper\models`:
+Open `dist\Clipper\Clipper.exe`. On first use it downloads the models into `D:\Clipper\data\models`:
 - Whisper `small`: about 485 MB (other sizes can be picked in Settings)
 - Kokoro TTS: about 120 MB, and only when a profile with a voiceover is used
 
@@ -80,7 +80,7 @@ still be installed (step 1).
 
 | Stage | What happens |
 |---|---|
-| Download | yt-dlp downloads the best quality up to 1080p into `%APPDATA%\Clipper\temp`, plus the chat replay when one exists (YouTube live replays). |
+| Download | yt-dlp downloads the best quality up to 1080p into `D:\Clipper\data\temp`, plus the chat replay when one exists (YouTube live replays). |
 | Transcribe | faster-whisper with word timestamps, fed 10 minutes at a time (cut at quiet moments) so memory stays under ~1 GB even for 4 h. It uses an NVIDIA GPU (CUDA) if present, otherwise CPU int8. On a 4-core laptop CPU, `small` runs about 3.5–4x real time (a 1 h 52 m stream took 30 min), so a 4 h VOD takes about 1–1.2 h. An interrupted transcription resumes from the last finished piece. |
 | Signals | Loudness spikes from the audio; message-rate spikes from chat. |
 | Rank | The transcript goes to Claude in 1-hour parts, with the signals, profile criteria and campaign rules, through `claude -p --output-format json`. Claude returns 6 candidates per hour, and at least 6 for videos shorter than an hour (JSON is validated, with one retry if malformed). Candidates are merged and de-duplicated, and the top 20 are kept. Parts with little or no speech are ranked from the loudness spikes, a 30-second loudness timeline and the chat spikes; parts with no speech and no spikes are skipped. Claude runs with no tools and no MCP connectors. |
@@ -93,7 +93,7 @@ ranking) are reused from the temp folder.
 
 ## Profiles
 
-Profiles are JSON files in `profiles\` next to the app (or `%APPDATA%\Clipper\profiles`). To add a
+Profiles are JSON files in `profiles\` next to the app (or `D:\Clipper\data\profiles`). To add a
 niche, **copy a file, rename it, edit it**, then click *Profiles folder → OK* to reload. Any key
 you leave out falls back to `gaming.json`.
 
@@ -103,7 +103,7 @@ you leave out falls back to `gaming.json`.
 | `candidates_per_hour` | Candidates requested per hour of video (default 6, so a 4 h VOD can fill the top 20) |
 | `clip_length` | `min` / `max` / `target` seconds |
 | `whisper_model`, `vad_filter`, `language` | Transcription. VAD is faster but can miss shouted speech over game audio |
-| `layout.mode` | `auto` (find the facecam in each clip: split if found, blurred fill if not), `split` (always split; uses the detected facecam, or `layout.facecam` if none is found) or `blur` (blurred fill) |
+| `layout.mode` | `overlay` (Gaming default: gameplay in the middle, the facecam kept at its original size in its original corner), `auto` (facecam enlarged on top, gameplay below), `split` (like auto, forced even when no cam is detected) or `blur` (whole frame on a blurred background). Without a detected cam, overlay/auto use the cam position from the video's other clips, else blur |
 | `layout.facecam` | Fallback facecam box for `split` when detection finds none, as fractions of the frame: `x, y, w, h` (e.g. top-left 30 %: `0,0,0.3,0.3`) |
 | `layout.split_top_ratio` | Height share of the facecam panel in split mode |
 | `layout.foreground_zoom` | >1 crops the sides of the foreground in blur mode (good for talking heads) |
@@ -114,12 +114,33 @@ you leave out falls back to `gaming.json`.
 
 ## Facecam detection
 
-With `layout.mode` set to `auto` (Gaming and Streamer profiles), each clip is checked for a
-streamer facecam: a face that stays in the same spot through the clip, inside an overlay box.
-If one is found, the clip uses the split layout with that box on top; if not (no facecam, a cam too
-dark or tiny to detect, or a compilation that cuts between streamers mid-clip), it uses the
-blurred background. The face detector (YuNet, 230 KB) downloads to `%APPDATA%\Clipper\models` on first
+Every clip is checked for a streamer facecam: a face that stays in the same spot through the clip,
+inside an overlay box. Gaming (`overlay`) keeps that box at the size it has in a 1080p frame, in the
+same corner, over the gameplay; Streamer (`auto`) enlarges it on top. If a clip shows no cam (head
+turned away, for example), the position the video's other clips agree on is used; if there is none
+(no facecam, a cam too dark or tiny, or a compilation that cuts between streamers), the clip uses the
+blurred background. The face detector (YuNet, 230 KB) downloads to `D:\Clipper\data\models` on first
 use. `report.txt` lists the layout and facecam position for every clip.
+
+## Extras (optional)
+
+Tick **Add extras** next to Start (or use `--extras` on the command line, or the per-clip checkbox in
+the editor) to add, inside the clip-length limit:
+- a 1.4 s **teaser**: the clip's loudest moment shown first under "WAIT FOR IT...";
+- a **context banner** (e.g. the game and situation) after the hook;
+- up to 3 **callouts**: short pop-ups Claude writes for moments in the clip, from what is said there;
+- a 1.8 s **end card**: the video's thumbnail with "Watch the full stream" and the channel and title.
+
+When extras are on, clips are picked about 3 s shorter so the finished clip still fits the limit; if a
+clip is too long anyway, the end card is dropped first, then the teaser.
+
+## Where files go
+
+Everything Clipper stores lives under `D:\Clipper\data` (next to the app): `models`, `temp`
+(downloads in progress, resumable), `cache`, `tmp`, `settings.json`, kept sources. Nothing is written
+to `%APPDATA%`; data left there by older versions is moved over on start-up. Set the `CLIPPER_DATA`
+environment variable to use another folder. Finished clips go to the output folder from Settings
+(`D:\Clipper\output` by default).
 
 ## Campaign rules
 
@@ -133,7 +154,8 @@ Select a clip in the results list to:
 - **Play** it in your default player (or double-click it)
 - edit **start/end** (H:MM:SS.ss in the source), **hook text**, and **captions** (one row per caption
   line; keep the word count of a row to keep exact timing)
-- pick the **layout**: Auto, Facecam split or Blurred background (the panel shows where the facecam was found)
+- pick the **layout**: Facecam corner (original size), Facecam on top (big), Facecam on top (forced) or Blurred background (the panel shows where the facecam was found)
+- turn the **extras** on or off for that clip
 - toggle the **voiceover** and edit its intro line
 - **Save & re-render** that one clip
 - **Delete** it

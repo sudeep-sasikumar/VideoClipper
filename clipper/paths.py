@@ -12,8 +12,42 @@ FROZEN = getattr(sys, "frozen", False)
 # Folder holding the exe (frozen) or the repo root (source checkout).
 INSTALL_DIR = Path(sys.executable).parent if FROZEN else Path(__file__).resolve().parent.parent
 
-APP_DIR = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "Clipper"
+# Old location (on C:). Anything found there is moved to APP_DIR on start-up.
+LEGACY_APP_DIR = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "Clipper"
+
+
+def _writable(d: Path) -> bool:
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        probe = d / ".write_test"
+        probe.write_text("ok")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def _data_dir() -> Path:
+    r"""Everything Clipper stores (models, temp downloads, settings) lives next to the app.
+
+    Source checkout D:\Clipper -> D:\Clipper\data. Built exe in D:\Clipper\dist\Clipper -> the same
+    D:\Clipper\data (dist is wiped on every build). Elsewhere: <exe folder>\data. Override with the
+    CLIPPER_DATA environment variable. Falls back to %APPDATA%\Clipper only if that isn't writable.
+    """
+    env = os.environ.get("CLIPPER_DATA")
+    if env:
+        return Path(env)
+    root = INSTALL_DIR
+    if FROZEN and INSTALL_DIR.parent.name.lower() == "dist":
+        root = INSTALL_DIR.parent.parent
+    d = root / "data"
+    return d if _writable(d) else LEGACY_APP_DIR
+
+
+APP_DIR = _data_dir()
 MODELS_DIR = APP_DIR / "models"
+CACHE_DIR = APP_DIR / "cache"
+TMP_DIR = APP_DIR / "tmp"
 SETTINGS_FILE = APP_DIR / "settings.json"
 USER_PROFILES_DIR = APP_DIR / "profiles"
 BUNDLED_PROFILES_DIR = INSTALL_DIR / "profiles"
@@ -25,12 +59,61 @@ DEFAULT_SETTINGS = {
     "keep_source": False,         # keep the downloaded video for fast re-renders
     "claude_model": "",           # empty = CLI default
     "max_clips": 20,
+    "extras": False,              # teaser, context banner, callouts, end card
 }
 
 
+_dirs_ready = False
+
+
 def ensure_dirs() -> None:
-    for d in (APP_DIR, MODELS_DIR, USER_PROFILES_DIR, TEMP_ROOT):
+    global _dirs_ready
+    for d in (APP_DIR, MODELS_DIR, USER_PROFILES_DIR, TEMP_ROOT, CACHE_DIR, TMP_DIR):
         d.mkdir(parents=True, exist_ok=True)
+    if not _dirs_ready:
+        _dirs_ready = True
+        # Keep libraries' own caches and temp files off C: too.
+        os.environ.setdefault("HF_HOME", str(CACHE_DIR / "huggingface"))
+        os.environ["TMP"] = os.environ["TEMP"] = str(TMP_DIR)
+        import tempfile
+        tempfile.tempdir = str(TMP_DIR)
+        migrate_legacy()
+
+
+def _legacy_dirs() -> list[Path]:
+    dirs = [LEGACY_APP_DIR]
+    local = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    # Copies made while running inside the Claude desktop app's sandbox.
+    dirs += list((local / "Packages").glob("Claude_*/LocalCache/Roaming/Clipper"))
+    return [d for d in dirs if d.is_dir() and d.resolve() != APP_DIR.resolve()]
+
+
+def migrate_legacy(log=None) -> None:
+    """Move models, settings, profiles and kept sources from the old C: location, then remove it."""
+    import shutil
+    for old in _legacy_dirs():
+        if not any((old / n).exists() for n in ("models", "temp", "settings.json")):
+            continue  # not ours
+        try:
+            for name in ("models", "profiles", "sources"):
+                src = old / name
+                if not src.is_dir():
+                    continue
+                for item in src.rglob("*"):
+                    if item.is_file() and not item.name.endswith(".part"):
+                        dest = APP_DIR / name / item.relative_to(src)
+                        if not dest.exists():
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(item, dest)
+            if (old / "settings.json").exists() and not SETTINGS_FILE.exists():
+                shutil.copy2(old / "settings.json", SETTINGS_FILE)
+        except OSError as e:
+            if log:
+                log(f"Couldn't move {old} to {APP_DIR} ({e}); left it in place.")
+            continue  # keep the originals if anything failed to copy
+        shutil.rmtree(old, ignore_errors=True)  # temp downloads, logs, and the moved files
+        if log:
+            log(f"Moved Clipper's data from {old} to {APP_DIR}.")
 
 
 def prune_temp(max_age_days: float = 2.0) -> None:

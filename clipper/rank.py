@@ -122,9 +122,13 @@ Return ONLY a JSON array of exactly {n} objects (fewer only if the part truly ha
     "hook_text": "on-screen hook for the first 3 s, max 8 words, punchy, no emojis, no hashtags",
     "title": "3-6 word title for the file name",
     "reason": "one sentence: why this works as a clip",
-    "intro_line": "a natural spoken intro line for a voiceover, max 15 words, that teases the clip without spoiling it"
+    "intro_line": "a natural spoken intro line for a voiceover, max 15 words, that teases the clip without spoiling it",
+    "context": "2-5 word on-screen label saying what this is, e.g. the game and the situation; only facts from the title or transcript",
+    "callouts": [{{"at": "{'H:MM:SS' if hours else 'MM:SS'}", "text": "2-5 word pop-up pointing out what happens at that moment"}}]
   }}
-]"""
+]
+"callouts": 0 to 3 per clip, at moments inside the clip (not in its first 3 seconds), each saying only what the
+transcript shows is happening then (a reaction, a reveal, a turn). Never invent facts, names or numbers."""
 
 
 def _validate(items, a: float, b: float, duration: float, length: dict) -> list[dict]:
@@ -159,8 +163,29 @@ def _validate(items, a: float, b: float, duration: float, length: dict) -> list[
             "title": str(it.get("title") or hook or "clip").strip()[:80],
             "reason": str(it.get("reason") or "").strip(),
             "intro_line": str(it.get("intro_line") or "").strip(),
+            "context": " ".join(str(it.get("context") or "").split()[:6])[:48],
+            "callouts": _callouts(it.get("callouts"), s, e),
         })
     return good
+
+
+def _callouts(raw, s: float, e: float) -> list[list]:
+    """[[absolute time, text], ...] inside the clip, at most 3, at least 2.5 s apart."""
+    out: list[list] = []
+    if not isinstance(raw, list):
+        return out
+    for c in raw:
+        if not isinstance(c, dict):
+            continue
+        t = parse_ts(c.get("at"))
+        text = " ".join(str(c.get("text") or "").split()[:7])[:42]
+        if t is None or not text or not (s + 3.0 <= t <= e - 0.8):
+            continue
+        if all(abs(t - o[0]) >= 2.5 for o in out):
+            out.append([round(t, 2), text])
+        if len(out) >= 3:
+            break
+    return sorted(out)
 
 
 def fit_to_words(c: dict, words: list[list], length: dict, duration: float) -> dict:
@@ -232,7 +257,8 @@ def rank(*, title: str, transcript: dict, signals: dict, profile: dict, length: 
         try:
             data = json.loads(cache.read_text(encoding="utf-8"))
             if data.get("rules") == rules and data.get("profile") == profile.get("_id") and data.get("clips") \
-                    and data.get("cph") == profile.get("candidates_per_hour"):
+                    and data.get("cph") == profile.get("candidates_per_hour") \
+                    and data.get("max_len") == length["max"]:
                 rep.log("Reusing ranking from an earlier run.")
                 rep.progress("rank", 1.0)
                 return data["clips"]
@@ -303,7 +329,7 @@ def rank(*, title: str, transcript: dict, signals: dict, profile: dict, length: 
         c["rank"] = n
     if cache:
         cache.write_text(json.dumps({"rules": rules, "profile": profile.get("_id"), "clips": clips,
-                                    "cph": profile.get("candidates_per_hour")},
+                                    "cph": profile.get("candidates_per_hour"), "max_len": length["max"]},
                                     ensure_ascii=False, indent=2), encoding="utf-8")
     rep.log(f"Kept {len(clips)} clip(s) from {len(cands)} candidate(s).")
     return clips

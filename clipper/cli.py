@@ -22,6 +22,8 @@ def main(argv=None) -> int:
     ap.add_argument("--model", default=settings.get("whisper_model", ""), help="whisper model override")
     ap.add_argument("--keep-source", action="store_true", default=settings.get("keep_source", False))
     ap.add_argument("--max-clips", type=int, default=settings.get("max_clips", 20))
+    ap.add_argument("--extras", action=argparse.BooleanOptionalAction, default=settings.get("extras", False),
+                    help="add a teaser, context banner, callouts and an end card")
     a = ap.parse_args(argv)
     rules = a.rules
     if rules.startswith("@"):
@@ -29,7 +31,8 @@ def main(argv=None) -> int:
             rules = f.read()
     try:
         folder = run_job(JobConfig(url=a.url, profile=profs[a.profile], rules=rules, output_dir=a.out,
-                                   whisper_model=a.model, keep_source=a.keep_source, max_clips=a.max_clips),
+                                   whisper_model=a.model, keep_source=a.keep_source, max_clips=a.max_clips,
+                                   extras=a.extras),
                          Reporter())
     except ClipperError as e:
         print(f"\n{e.title}: {e}", file=sys.stderr)

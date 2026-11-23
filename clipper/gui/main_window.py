@@ -155,6 +155,12 @@ class MainWindow(QMainWindow):
         self.start_btn.setMinimumWidth(110)
         self.start_btn.setStyleSheet("font-weight: bold; padding: 6px;")
         self.start_btn.clicked.connect(self._start)
+        self.extras_box = QCheckBox("Add extras")
+        self.extras_box.setToolTip("Adds a 1.4 s teaser of the clip's peak, a context banner, Claude's pop-up "
+                                   "callouts, and an end card with the video's thumbnail. Clips stay within "
+                                   "the length limit.")
+        self.extras_box.setChecked(bool(self.settings.get("extras", False)))
+        self.extras_box.toggled.connect(self._extras_toggled)
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.clicked.connect(self._cancel)
@@ -162,6 +168,7 @@ class MainWindow(QMainWindow):
         b_open.clicked.connect(self._open_project)
         r2.addWidget(self.rules_hint, 1)
         r2.addWidget(b_open)
+        r2.addWidget(self.extras_box)
         r2.addWidget(self.cancel_btn)
         r2.addWidget(self.start_btn)
         v.addLayout(r2)
@@ -214,6 +221,7 @@ class MainWindow(QMainWindow):
         self.e_layout = QComboBox()
         self.e_layout.setToolTip("Auto finds the streamer's facecam and puts it on top; if there is none, "
                                  "the clip uses a blurred background.")
+        self.e_extras = QCheckBox("Extras (teaser, banner, callouts, end card)")
         self.e_vo = QCheckBox("Voiceover intro")
         self.e_intro = QLineEdit()
         self.e_caps = QPlainTextEdit()
@@ -224,6 +232,7 @@ class MainWindow(QMainWindow):
         f.addRow("End", self.e_end)
         f.addRow("Hook text", self.e_hook)
         f.addRow("Layout", self.e_layout)
+        f.addRow(self.e_extras)
         f.addRow(self.e_vo)
         f.addRow("Intro line", self.e_intro)
         ev.addLayout(f)
@@ -342,13 +351,18 @@ class MainWindow(QMainWindow):
                         output_dir=self.settings["output_dir"], whisper_model=self.settings.get("whisper_model", ""),
                         keep_source=bool(self.settings.get("keep_source")),
                         max_clips=int(self.settings.get("max_clips", 20)),
-                        claude_model=self.settings.get("claude_model", ""))
+                        claude_model=self.settings.get("claude_model", ""),
+                        extras=self.extras_box.isChecked())
         self.list.clear()
         self.proj = None
         self._set_editor_enabled(False)
         self.bar.setValue(0)
         self._append(f"--- Starting: {url} (profile: {prof['name']})")
         self._run(lambda rep: run_job(cfg, rep), self._job_done, "Starting...")
+
+    def _extras_toggled(self, on: bool):
+        self.settings["extras"] = bool(on)
+        save_settings(self.settings)
 
     def _cancel(self):
         if self.worker:
@@ -401,7 +415,7 @@ class MainWindow(QMainWindow):
         return next((c for c in self.proj["clips"] if c["rank"] == rank), None)
 
     def _set_editor_enabled(self, on: bool):
-        for w in (self.e_start, self.e_end, self.e_hook, self.e_layout, self.e_vo, self.e_intro, self.e_caps,
+        for w in (self.e_start, self.e_end, self.e_hook, self.e_layout, self.e_extras, self.e_vo, self.e_intro, self.e_caps,
                   self.b_play, self.b_render, self.b_delete):
             w.setEnabled(on)
         if not on:
@@ -434,6 +448,7 @@ class MainWindow(QMainWindow):
         self.e_layout.setCurrentIndex(max(0, self.e_layout.findData(c.get("layout", ""))))
         self.e_layout.blockSignals(False)
         self.e_vo.setChecked(bool(c.get("voiceover")))
+        self.e_extras.setChecked(project.extras_on(self.proj, c))
         self.e_intro.setText(c.get("intro_line", ""))
         lines = c.get("captions") or []
         self.e_caps.setPlainText("\n".join(" ".join(w[2] for w in ln["words"]) for ln in lines))
@@ -460,6 +475,7 @@ class MainWindow(QMainWindow):
         try:
             project.edit_clip(self.proj, c, start=s, end=e, hook_text=self.e_hook.text(),
                               voiceover_on=self.e_vo.isChecked(), intro_line=self.e_intro.text(),
+                              extras=self.e_extras.isChecked(),
                               layout=self.e_layout.currentData() or None)
             if not self.e_layout.currentData():
                 c.pop("layout", None)  # back to the profile's default
