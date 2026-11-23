@@ -18,6 +18,18 @@ STAGE_WEIGHTS = {
 }
 
 
+def _console_utf8() -> None:
+    """Windows consoles/pipes default to cp1252, which can't print emoji in video titles."""
+    import sys
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure") and \
+                (getattr(stream, "encoding", "") or "").lower().replace("-", "") != "utf8":
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 class Reporter:
     """Collects log lines and progress; checks for cancel.
 
@@ -36,6 +48,7 @@ class Reporter:
         if self.on_log:
             self.on_log(line)
         else:
+            _console_utf8()
             print(line, flush=True)
 
     def progress(self, stage: str, frac: float) -> None:

@@ -12,6 +12,8 @@ from .pipeline import JobConfig, run_job
 
 
 def main(argv=None) -> int:
+    from .events import _console_utf8
+    _console_utf8()
     settings = load_settings()
     profs = profiles.load_all(print)
     ap = argparse.ArgumentParser(prog="clipper", description="Turn a long video into ranked TikTok clips.")

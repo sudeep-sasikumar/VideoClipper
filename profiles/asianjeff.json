@@ -1,0 +1,61 @@
+{
+  "name": "AsianJeff (GTA 6)",
+  "description": "AsianJeff stream VODs: his facecam big on top, gameplay below with his top-right chat box cropped off.",
+  "highlight_criteria": "AsianJeff's funniest and most memorable moments: big reactions (screaming, laughing, shock, disbelief), memorable quotes, funny conversations with chat, his commentary on GTA 6, wins and fails. AsianJeff must be the main focus: pick moments where he is reacting or talking, not stretches of cutscene or gameplay without him reacting.",
+  "candidates_per_hour": 6,
+  "clip_length": {
+    "min": 20,
+    "max": 60,
+    "target": 40
+  },
+  "whisper_model": "small",
+  "language": null,
+  "vad_filter": false,
+  "layout": {
+    "mode": "auto",
+    "facecam": {
+      "x": 0.0,
+      "y": 0.0,
+      "w": 0.28,
+      "h": 0.32
+    },
+    "split_top_ratio": 0.38,
+    "foreground_zoom": 1.0,
+    "game_crop_top": 0.16
+  },
+  "captions": {
+    "enabled": true,
+    "font": "Arial Black",
+    "size": 80,
+    "color": "#FFFFFF",
+    "highlight": "#3CF06E",
+    "outline": "#000000",
+    "outline_width": 7,
+    "shadow": 2,
+    "uppercase": true,
+    "words_per_line": 3,
+    "position_y": 0.72
+  },
+  "hook": {
+    "enabled": true,
+    "font": "Arial Black",
+    "size": 66,
+    "color": "#FFFFFF",
+    "box": "#9146FF",
+    "duration": 3.0,
+    "position_y": 0.14
+  },
+  "zoom": {
+    "enabled": true,
+    "amount": 0.07,
+    "max_punches": 6,
+    "length": 0.7
+  },
+  "voiceover": {
+    "enabled": false,
+    "voice": "am_adam",
+    "speed": 1.05,
+    "volume": 1.0,
+    "duck": 0.35
+  }
+}

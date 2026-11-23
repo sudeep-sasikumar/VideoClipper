@@ -72,6 +72,9 @@ def build_filtergraph(layout: dict, punches: list[float], zoom: dict, *, src_w: 
     pre, post, dur = float(ex.get("pre", 0)), float(ex.get("post", 0)), float(ex.get("dur", 0))
     mode = layout.get("mode", "blur")
     g = []
+    # Optional: trim the top of the gameplay picture (e.g. an on-stream chat box with platform icons)
+    top_cut = min(0.4, max(0.0, float(layout.get("game_crop_top", 0.0))))
+    gcrop = f"crop=iw:ih*{1 - top_cut:.4f}:0:ih*{top_cut:.4f}," if top_cut > 0 else ""
 
     # ---- source video (+ teaser: a flash-forward of the peak moment before the clip starts)
     tin = ex.get("teaser_input")
@@ -91,7 +94,7 @@ def build_filtergraph(layout: dict, punches: list[float], zoom: dict, *, src_w: 
         fw, fh = float(fc.get("w", 0.3)), float(fc.get("h", 0.3))
         g.append(f"[a0]crop=iw*{fw:.4f}:ih*{fh:.4f}:iw*{fx:.4f}:ih*{fy:.4f},"
                  f"scale={W}:{top_h}:force_original_aspect_ratio=increase,crop={W}:{top_h}[top]")
-        g.append(f"[b0]scale={W}:{bot_h}:force_original_aspect_ratio=increase,crop={W}:{bot_h}[bot]")
+        g.append(f"[b0]{gcrop}scale={W}:{bot_h}:force_original_aspect_ratio=increase,crop={W}:{bot_h}[bot]")
         g.append("[top][bot]vstack=inputs=2[base]")
     elif mode == "overlay":
         geo = overlay_geometry(layout, src_w, src_h)
@@ -99,7 +102,7 @@ def build_filtergraph(layout: dict, punches: list[float], zoom: dict, *, src_w: 
         g.append("[vin]split=3[a0][b0][c0]")
         g.append(f"[a0]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,"
                  f"boxblur=12:2,eq=brightness=-0.10:saturation=1.1,scale={W}:{H}[bg]")
-        g.append(f"[b0]scale={W}:{geo['game_h']}:force_original_aspect_ratio=increase,crop={W}:{geo['game_h']}[game]")
+        g.append(f"[b0]{gcrop}scale={W}:{geo['game_h']}:force_original_aspect_ratio=increase,crop={W}:{geo['game_h']}[game]")
         g.append(f"[c0]crop=iw*{float(fc['w']):.4f}:ih*{float(fc['h']):.4f}:iw*{float(fc['x']):.4f}:"
                  f"ih*{float(fc['y']):.4f},scale={geo['cam_w']}:{geo['cam_h']},"
                  f"pad=iw+8:ih+8:4:4:color=white[cam]")
@@ -112,7 +115,7 @@ def build_filtergraph(layout: dict, punches: list[float], zoom: dict, *, src_w: 
         # Blurred cover background, computed small for speed then scaled up.
         g.append(f"[a0]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,"
                  f"boxblur=12:2,eq=brightness=-0.06:saturation=1.15,scale={W}:{H}[bg]")
-        fg = f"[b0]scale={fg_w}:-2"
+        fg = f"[b0]{gcrop}scale={fg_w}:-2"
         if fz > 1.0:
             fg += f",crop={W}:min(ih\\,{H})"
         g.append(fg + "[fg]")

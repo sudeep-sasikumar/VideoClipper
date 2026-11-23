@@ -17,11 +17,17 @@ LEGACY_APP_DIR = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Ro
 
 
 def _writable(d: Path) -> bool:
+    """Can we write in d? Each process uses its own probe file: two Clipper processes starting at
+    the same moment used to collide on a shared one, and one of them then fell back to C:."""
+    import uuid
     try:
         d.mkdir(parents=True, exist_ok=True)
-        probe = d / ".write_test"
+        probe = d / f".write_test_{os.getpid()}_{uuid.uuid4().hex[:8]}"
         probe.write_text("ok")
-        probe.unlink()
+        try:
+            probe.unlink()
+        except OSError:
+            pass  # wrote fine; a leftover probe file is harmless
         return True
     except OSError:
         return False
@@ -41,7 +47,9 @@ def _data_dir() -> Path:
     if FROZEN and INSTALL_DIR.parent.name.lower() == "dist":
         root = INSTALL_DIR.parent.parent
     d = root / "data"
-    return d if _writable(d) else LEGACY_APP_DIR
+    if d.is_dir() or _writable(d):
+        return d
+    return LEGACY_APP_DIR
 
 
 APP_DIR = _data_dir()
