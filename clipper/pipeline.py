@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import claude_cli, download, project, rank, signals, transcribe
+from . import claude_cli, download, hooks, project, rank, signals, transcribe
 from .errors import BadLinkError, Cancelled, ClipperError, DiskSpaceError
 from .events import Reporter
 from .paths import APP_DIR, DEFAULT_SETTINGS, TEMP_ROOT, ensure_dirs, safe_name
@@ -25,6 +25,7 @@ class JobConfig:
     keep_source: bool = False
     max_clips: int = 20
     claude_model: str = ""
+    hook_pass: bool = True       # second Claude pass that rewrites hooks to stop the scroll
     audio_first: bool | None = None  # None = automatic (long VODs, or not enough disk for the video)
     extras: bool = False         # teaser, context banner, callouts, end card
     end_card: bool = True        # thumbnail end card as part of the extras
@@ -160,6 +161,16 @@ def run_job(cfg: JobConfig, rep: Reporter) -> Path:
     clips = rank.rank(title=title, transcript=tr, signals=sig, profile=profile, length=rank_length,
                       rules=cfg.rules, duration=duration, rep=rep, cache=work / "ranking.json",
                       max_clips=cfg.max_clips, model=cfg.claude_model)
+
+    if cfg.hook_pass:
+        rep.log("Sharpening the hooks...")
+        try:
+            hooks.sharpen_hooks(clips, tr, title=title, rules=cfg.rules, rep=rep,
+                                overlay_name=cfg.overlay_name, model=cfg.claude_model)
+        except ClipperError as e:
+            if isinstance(e, Cancelled):
+                raise
+            rep.log(f"Hook pass skipped ({e.message}); keeping the original hooks.")
 
     # ---- 5/6. render (+ voiceover)
     folder = project.output_folder(out_base, title, vid)

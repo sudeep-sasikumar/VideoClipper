@@ -119,7 +119,7 @@ Return ONLY a JSON array of exactly {n} objects (fewer only if the part truly ha
     "start": "{'H:MM:SS' if hours else 'MM:SS'}",
     "end": "{'H:MM:SS' if hours else 'MM:SS'}",
     "score": 1-10 integer (10 = would go viral, 5 = decent, 1 = filler),
-    "hook_text": "on-screen hook for the first 3 s, max 8 words, punchy, no emojis, no hashtags",
+    "hook_text": "scroll-stopping on-screen hook for the first 3 s, max 8 words: a curiosity gap, the stakes, a specific detail or a bold question, not a plain title; true to the clip, no spoiler, no emojis, no hashtags",
     "title": "3-6 word title for the file name",
     "reason": "one sentence: why this works as a clip",
     "intro_line": "a natural spoken intro line for a voiceover, max 15 words, that teases the clip without spoiling it",
