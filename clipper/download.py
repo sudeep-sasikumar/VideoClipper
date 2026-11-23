@@ -165,7 +165,34 @@ def download_video(info: dict, workdir: Path, rep: Reporter) -> Path:
     return vids[0]
 
 
+def _clear(workdir: Path, stem: str) -> None:
+    """Remove leftovers of an earlier attempt: resuming from stale fragments can silently skip
+    whole stretches of a stream (a 27 h VOD came back 2.6 h short)."""
+    for p in workdir.glob(stem + ".*"):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
 def download_audio(info: dict, workdir: Path, rep: Reporter) -> Path:
+    """Audio only, checked against the stream's length; one fresh retry if it comes back short."""
+    from .tools import media_duration
+    want = float(info.get("duration") or 0)
+    for attempt in range(2):
+        _clear(workdir, "source_audio")
+        path = _download_audio_once(info, workdir, rep)
+        got = media_duration(path)
+        if not want or got >= want * 0.99 - 5:
+            return path
+        rep.log(f"The audio came back {(want - got) / 60:.0f} min short of the stream "
+                f"({got / 3600:.2f} h vs {want / 3600:.2f} h)" + ("; downloading it again." if attempt == 0 else "."))
+    _clear(workdir, "source_audio")
+    raise ClipperError("The audio download keeps coming back incomplete.",
+                       "Try again later, or use --no-audio-first to download the whole video instead.")
+
+
+def _download_audio_once(info: dict, workdir: Path, rep: Reporter) -> Path:
     """Audio only (for long VODs): a 27 h stream is ~2 GB of audio instead of ~90 GB of video.
     The clips' video is fetched later, one short section per clip."""
     workdir.mkdir(parents=True, exist_ok=True)
