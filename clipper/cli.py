@@ -24,6 +24,10 @@ def main(argv=None) -> int:
     ap.add_argument("--max-clips", type=int, default=settings.get("max_clips", 20))
     ap.add_argument("--extras", action=argparse.BooleanOptionalAction, default=settings.get("extras", False),
                     help="add a teaser, context banner, callouts and an end card")
+    ap.add_argument("--end-card", action=argparse.BooleanOptionalAction,
+                    default=settings.get("extras_end_card", True), help="include the thumbnail end card in extras")
+    ap.add_argument("--name", default=settings.get("overlay_name", ""),
+                    help="name that must appear on screen in every clip (e.g. a campaign rule)")
     a = ap.parse_args(argv)
     rules = a.rules
     if rules.startswith("@"):
@@ -32,7 +36,7 @@ def main(argv=None) -> int:
     try:
         folder = run_job(JobConfig(url=a.url, profile=profs[a.profile], rules=rules, output_dir=a.out,
                                    whisper_model=a.model, keep_source=a.keep_source, max_clips=a.max_clips,
-                                   extras=a.extras),
+                                   extras=a.extras, end_card=a.end_card, overlay_name=a.name),
                          Reporter())
     except ClipperError as e:
         print(f"\n{e.title}: {e}", file=sys.stderr)

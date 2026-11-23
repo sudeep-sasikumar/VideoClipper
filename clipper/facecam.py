@@ -82,10 +82,9 @@ def _faces(frames: list[np.ndarray], model: Path) -> list[np.ndarray]:
     return out
 
 
-def _steady_face(per_frame: list[np.ndarray], w: int):
-    """(median face box (x, y, w, h), fraction of frames, indices of those frames) or None."""
+def _steady_faces(per_frame: list[np.ndarray], w: int):
+    """Candidate cam faces, best first: [(median box (x, y, w, h), fraction of frames, frame indices)]."""
     cands = [f for faces in per_frame for f in faces if f[2] <= MAX_FACE_W * w]
-    best_members: list[tuple[int, np.ndarray]] = []
     clusters: list[list[tuple[int, np.ndarray]]] = []
     for c in cands:
         cx, cy, cw = c[0] + c[2] / 2, c[1] + c[3] / 2, c[2]
@@ -98,19 +97,26 @@ def _steady_face(per_frame: list[np.ndarray], w: int):
                     members.append((i, f))
                     break
         clusters.append(members)
-    # Among faces steady enough to be a cam, take the largest (in group streams the main
-    # streamer's cam is usually the big one); otherwise fall back to the steadiest.
+    # Faces steady enough to be a cam, largest first (in group streams the main streamer's cam is
+    # usually the big one). Each face is a candidate: a still cutscene face may come first, and
+    # find_box moves on to the next when it doesn't sit in a webcam-like box.
     n = max(1, len(per_frame))
-    steady = [m for m in clusters if len(m) / n >= MIN_CONSISTENCY]
-    if steady:
-        best_members = max(steady, key=lambda m: (float(np.median([f[2] for _, f in m])), len(m)))
-    elif clusters:
-        best_members = max(clusters, key=len)
-    if not best_members:
-        return None
-    frac = len(best_members) / max(1, len(per_frame))
-    box = np.median(np.array([f for _, f in best_members])[:, :4], axis=0)
-    return box, frac, [i for i, _ in best_members]
+    ranked = sorted(clusters, key=lambda m: (len(m) / n >= MIN_CONSISTENCY,
+                                             float(np.median([f[2] for _, f in m])) if m else 0.0, len(m)),
+                    reverse=True)
+    out = []
+    for members in ranked:
+        if not members:
+            continue
+        box = np.median(np.array([f for _, f in members])[:, :4], axis=0)
+        cx, cy = box[0] + box[2] / 2, box[1] + box[3] / 2
+        if any(abs(cx - (o[0][0] + o[0][2] / 2)) < 0.5 * box[2] and abs(cy - (o[0][1] + o[0][3] / 2)) < 0.5 * box[2]
+               for o in out):
+            continue  # same face as an earlier candidate
+        out.append((box, len(members) / n, [i for i, _ in members]))
+        if len(out) >= 4:
+            break
+    return out
 
 
 def _maps(frames: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
@@ -169,17 +175,23 @@ def _find_line(edges, std, side: str, face, w: int, h: int) -> float | None:
     return None
 
 
-CAM_ASPECT = 1.5            # typical webcam overlay (between 4:3 and 16:9), used for missing sides
+CAM_ASPECT = 1.7            # typical webcam overlay (16:9-ish), used for missing sides
 
 
 def find_box(frames: list[np.ndarray], model: Path) -> dict | None:
     if len(frames) < 4:
         return None
     h, w = frames[0].shape[:2]
-    steady = _steady_face(_faces(frames, model), w)
-    if steady is None:
-        return None
-    face, frac, idx = steady
+    for face, frac, idx in _steady_faces(_faces(frames, model), w):
+        box = _box_from(frames, face, frac, idx)
+        if box:
+            return box
+    return None
+
+
+def _box_from(frames: list[np.ndarray], face, frac: float, idx: list[int]) -> dict | None:
+    """The webcam overlay box around this face, or None if it doesn't look like one."""
+    h, w = frames[0].shape[:2]
     if frac < MIN_CONSISTENCY:
         return None
     # The cam must be there in both halves of the clip: compilations cut between streamers, and a

@@ -81,6 +81,12 @@ class SettingsDialog(QDialog):
         self.cmodel = QLineEdit(self.s.get("claude_model", ""))
         self.cmodel.setPlaceholderText("CLI default (e.g. sonnet, opus)")
         lay.addRow("Claude model", self.cmodel)
+        self.oname = QLineEdit(self.s.get("overlay_name", ""))
+        self.oname.setPlaceholderText("e.g. Kai Cenat (shown on screen in every clip; blank = off)")
+        lay.addRow("Name on every clip", self.oname)
+        self.endcard = QCheckBox("Include the thumbnail end card in extras (turn off if logos aren't allowed)")
+        self.endcard.setChecked(bool(self.s.get("extras_end_card", True)))
+        lay.addRow("", self.endcard)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
@@ -101,6 +107,8 @@ class SettingsDialog(QDialog):
         except ValueError:
             pass
         self.s["claude_model"] = self.cmodel.text().strip()
+        self.s["overlay_name"] = self.oname.text().strip()
+        self.s["extras_end_card"] = self.endcard.isChecked()
         return self.s
 
 
@@ -352,7 +360,9 @@ class MainWindow(QMainWindow):
                         keep_source=bool(self.settings.get("keep_source")),
                         max_clips=int(self.settings.get("max_clips", 20)),
                         claude_model=self.settings.get("claude_model", ""),
-                        extras=self.extras_box.isChecked())
+                        extras=self.extras_box.isChecked(),
+                        end_card=bool(self.settings.get("extras_end_card", True)),
+                        overlay_name=self.settings.get("overlay_name", ""))
         self.list.clear()
         self.proj = None
         self._set_editor_enabled(False)

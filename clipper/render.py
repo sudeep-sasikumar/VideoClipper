@@ -236,7 +236,8 @@ def render_clip(*, source: Path, source_offset: float, clip: dict, words: list[l
                                                       hook_style=hook_style, dur=dur) if ex else ([], [])
     captions.write_ass(work / "captions.ass", lines=lines, clip_start=start, clip_end=end,
                        cap_style=cap_style, hook_text=clip.get("hook_text", ""), hook_style=hook_style,
-                       offset=pre, total=total, extra_styles=extra_styles, extra_events=extra_events)
+                       offset=pre, total=total, extra_styles=extra_styles, extra_events=extra_events,
+                       clean=bool(profile.get("censor_captions", True)))
 
     punches = pick_punches(loudness, start, end, profile.get("zoom", {}))
     src_w, src_h = probe_size(source)

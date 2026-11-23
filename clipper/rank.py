@@ -124,6 +124,7 @@ Return ONLY a JSON array of exactly {n} objects (fewer only if the part truly ha
     "reason": "one sentence: why this works as a clip",
     "intro_line": "a natural spoken intro line for a voiceover, max 15 words, that teases the clip without spoiling it",
     "context": "2-5 word on-screen label saying what this is, e.g. the game and the situation; only facts from the title or transcript",
+    "post_caption": "the caption to post with the clip: one short line that makes people watch, plus any names and hashtags the campaign rules require",
     "callouts": [{{"at": "{'H:MM:SS' if hours else 'MM:SS'}", "text": "2-5 word pop-up pointing out what happens at that moment"}}]
   }}
 ]
@@ -164,9 +165,28 @@ def _validate(items, a: float, b: float, duration: float, length: dict) -> list[
             "reason": str(it.get("reason") or "").strip(),
             "intro_line": str(it.get("intro_line") or "").strip(),
             "context": " ".join(str(it.get("context") or "").split()[:6])[:48],
+            "post_caption": " ".join(str(it.get("post_caption") or "").split())[:300],
             "callouts": _callouts(it.get("callouts"), s, e),
         })
     return good
+
+
+def required_hashtags(rules: str) -> list[str]:
+    """Hashtags written in the campaign rules (e.g. "#KAICENAT"): every post caption gets them."""
+    import re
+    seen, out = set(), []
+    for tag in re.findall(r"#[A-Za-z0-9_]{2,40}", rules or ""):
+        if tag.lower() not in seen:
+            seen.add(tag.lower())
+            out.append(tag)
+    return out
+
+
+def finish_post_caption(caption: str, rules: str, hook: str = "") -> str:
+    caption = (caption or hook or "").strip()
+    have = caption.lower()
+    missing = [t for t in required_hashtags(rules) if t.lower() not in have]
+    return (caption + " " + " ".join(missing)).strip()
 
 
 def _callouts(raw, s: float, e: float) -> list[list]:
@@ -324,6 +344,8 @@ def rank(*, title: str, transcript: dict, signals: dict, profile: dict, length: 
         raise ClaudeOutputError("Claude didn't return any usable clips.", "; ".join(errors))
 
     fitted = [fit_to_words(c, words, length, duration) for c in cands]
+    for c in fitted:
+        c["post_caption"] = finish_post_caption(c.get("post_caption", ""), rules, c.get("hook_text", ""))
     clips = merge(fitted, max_clips)
     for n, c in enumerate(clips, 1):
         c["rank"] = n

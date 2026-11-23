@@ -134,6 +134,25 @@ the editor) to add, inside the clip-length limit:
 When extras are on, clips are picked about 3 s shorter so the finished clip still fits the limit; if a
 clip is too long anyway, the end card is dropped first, then the teaser.
 
+## Campaign options
+
+Settings has two options for brand/clipping campaigns:
+- **Name on every clip**: e.g. `Kai Cenat`. A small label with that name (plus Claude's context, like
+  "GTA 6 final mission") stays on screen after the hook, so every clip's text overlay names the creator.
+- **Include the thumbnail end card in extras**: turn it off when the rules say "no logos" (video
+  thumbnails often carry game or channel logos).
+
+Also, for every clip:
+- burned-in captions mask slurs and strong swears (`n***a`, `f*****g`); the transcript itself is untouched.
+  Set `"censor_captions": false` in a profile to turn this off;
+- Claude writes a **post caption** (in `report.txt` / `report.json`), and every hashtag written in the
+  campaign rules (e.g. `#KAICENAT`) is added if missing;
+- if the streamer switches to a full-screen camera (e.g. at the end of a stream), that clip shows the
+  whole frame instead of cropping the usual cam spot; cam crops are trimmed to a webcam shape so chat
+  lines and name tags under the cam are left out.
+
+Command line: `--name "Kai Cenat"`, `--no-end-card`, `--max-clips 8`.
+
 ## Where files go
 
 Everything Clipper stores lives under `D:\Clipper\data` (next to the app): `models`, `temp`

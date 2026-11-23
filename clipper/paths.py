@@ -60,6 +60,8 @@ DEFAULT_SETTINGS = {
     "claude_model": "",           # empty = CLI default
     "max_clips": 20,
     "extras": False,              # teaser, context banner, callouts, end card
+    "extras_end_card": True,      # include the thumbnail end card in extras
+    "overlay_name": "",           # name that must appear on screen in every clip (campaign rule)
 }
 
 

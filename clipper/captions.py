@@ -26,6 +26,19 @@ def _ts(t: float) -> str:
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 
+_CENSOR = re.compile(
+    r"\b(nigg(?:a|as|az|er|ers|uh)|niga|fuck\w*|motherfuck\w*|shit\w*|bitch\w*|cunt\w*|"
+    r"fag\w*|retard\w*|whore\w*|slut\w*|dick\w*|pussy\w*|cock\w*)\b", re.I)
+
+
+def censor(text: str) -> str:
+    """'fucking' -> 'f*****g', 'nigga' -> 'n***a': first and last letter kept, the rest starred."""
+    def mask(m):
+        w = m.group(0)
+        return w if len(w) <= 2 else w[0] + "*" * (len(w) - 2) + w[-1]
+    return _CENSOR.sub(mask, text)
+
+
 def _esc(text: str) -> str:
     return text.replace("\\", "/").replace("{", "(").replace("}", ")").replace("\n", " ")
 
@@ -74,7 +87,8 @@ def _wrap_hook(text: str, max_chars: int = 18) -> str:
 
 def write_ass(path, *, lines: list[dict], clip_start: float, clip_end: float, cap_style: dict,
               hook_text: str, hook_style: dict, offset: float = 0.0, total: float | None = None,
-              extra_styles: list[str] | None = None, extra_events: list[str] | None = None) -> None:
+              extra_styles: list[str] | None = None, extra_events: list[str] | None = None,
+              clean: bool = True) -> None:
     """offset: seconds of teaser before the clip proper; total: full output length."""
     dur = clip_end - clip_start
     total = total if total is not None else dur + offset
@@ -118,7 +132,8 @@ def write_ass(path, *, lines: list[dict], clip_start: float, clip_end: float, ca
                     we = ws + 0.05
                 parts = []
                 for wj, w2 in enumerate(words):
-                    t = _esc(w2[2].upper() if upper else w2[2])
+                    t = _esc(censor(w2[2]) if clean else w2[2])
+                    t = t.upper() if upper else t
                     if wj == wi:
                         parts.append(r"{\c" + hi + r"\fscx112\fscy112}" + t + r"{\c" + base + r"\fscx100\fscy100}")
                     else:

@@ -169,6 +169,18 @@ def video_facecam(proj: dict, exclude: dict | None = None) -> dict | None:
     return med if len(agree) >= 0.75 * len(boxes) else None
 
 
+def webcam_shape(box: dict, src_w: int, src_h: int, max_aspect_h: float = 1 / 1.65) -> dict:
+    """Trim a box that is taller than a webcam (16:9-ish): the extra rows are usually chat or labels
+    under the cam (with platform icons in them), so the bottom is cut."""
+    b = {k: float(box[k]) for k in ("x", "y", "w", "h")}
+    max_h = b["w"] * src_w * max_aspect_h / src_h
+    if b["h"] > max_h * 1.04:
+        b["h"] = max_h
+    # Overlays often put the newest chat line or a name tag over the cam's bottom edge.
+    b["h"] = round(b["h"] * 0.93, 4)
+    return b
+
+
 def effective_layout(proj: dict, clip: dict, source: Path, source_offset: float, rep: Reporter) -> dict:
     """Layout for this clip. Per-clip choice ("layout") overrides the profile's mode.
 
@@ -191,12 +203,35 @@ def effective_layout(proj: dict, clip: dict, source: Path, source_offset: float,
         clip["facecam_box"] = facecam.detect(source, clip["start"] - source_offset, clip["end"] - source_offset,
                                              w, h, rep) or False
     mode = "overlay" if choice == "overlay" else "split"
+    w, h = render.probe_size(source)
     box = clip["facecam_box"]
+    vbox = video_facecam(proj, exclude=clip)
+    clip.pop("facecam_used", None)
+    if box and vbox:
+        area, varea = box["w"] * box["h"], vbox["w"] * vbox["h"]
+        far = (abs(box["x"] + box["w"] / 2 - vbox["x"] - vbox["w"] / 2) > 0.08
+               or abs(box["y"] + box["h"] / 2 - vbox["y"] - vbox["h"] / 2) > 0.08)
+        if area > 2.5 * varea and not forced:
+            # The streamer switched to a full-screen camera (e.g. "just chatting" at the end of a
+            # stream): show the whole frame, zoomed in, instead of cropping the usual cam corner.
+            clip["layout_used"] = "full frame (streamer on full-screen camera)"
+            rep.log(f"Clip {clip['rank']}: streamer is on a full-screen camera here; showing the whole frame.")
+            return dict(base, mode="blur", foreground_zoom=max(1.5, float(base.get("foreground_zoom", 1.0))))
+        if far or area < 0.75 * varea:
+            # A "cam" somewhere else (a still face in a cutscene) or a much tighter box than usual:
+            # use the position and size the rest of the video agrees on, so every clip is framed alike.
+            box = None
+            clip["layout_used"] = f"{mode} (facecam position from the rest of the video)"
+            rep.log(f"Clip {clip['rank']}: using the usual facecam spot.")
+            used = webcam_shape(vbox, w, h)
+            clip["facecam_used"] = used
+            return dict(base, mode=mode, facecam=used)
     if box:
         clip["layout_used"] = mode
-        rep.log(f"Clip {clip['rank']}: {facecam.describe(box)}.")
-        return dict(base, mode=mode, facecam={k: box[k] for k in ("x", "y", "w", "h")})
-    vbox = video_facecam(proj, exclude=clip)
+        used = webcam_shape(box, w, h)
+        clip["facecam_used"] = used
+        rep.log(f"Clip {clip['rank']}: {facecam.describe(used)}.")
+        return dict(base, mode=mode, facecam=used)
     if vbox is None and forced:
         others = [c["facecam_box"] for c in proj.get("clips", []) if c is not clip and c.get("facecam_box")]
         if others:
@@ -204,7 +239,9 @@ def effective_layout(proj: dict, clip: dict, source: Path, source_offset: float,
     if vbox:
         clip["layout_used"] = f"{mode} (facecam position from the rest of the video)"
         rep.log(f"Clip {clip['rank']}: facecam not seen here; using its position from the rest of the video.")
-        return dict(base, mode=mode, facecam=vbox)
+        used = webcam_shape(vbox, w, h)
+        clip["facecam_used"] = used
+        return dict(base, mode=mode, facecam=used)
     rep.log(f"Clip {clip['rank']}: no facecam found.")
     if choice == "split":
         clip["layout_used"] = "split (profile box)"
@@ -222,10 +259,28 @@ def extras_on(proj: dict, clip: dict) -> bool:
     return bool(clip["extras"]) if "extras" in clip else bool(proj.get("extras", False))
 
 
+def name_label(proj: dict, clip: dict) -> str:
+    """On-screen label that guarantees the required name (Settings > Name on every clip) appears.
+
+    Empty when no name is set or the hook already says it; otherwise "NAME · context" (or the name)."""
+    name = (proj.get("overlay_name") or "").strip()
+    if not name:
+        return ""
+    first = name.split()[0].lower()
+    context = (clip.get("context") or "").strip()
+    if first in (clip.get("hook_text") or "").lower() and (not context or first in context.lower()):
+        return context
+    if context and first in context.lower():
+        return context
+    return f"{name} \u2022 {context}" if context else name
+
+
 def extras_plan(proj: dict, clip: dict) -> dict | None:
     """What extra elements this clip gets, fitted inside the clip-length limit (end card goes first)."""
     if not extras_on(proj, clip):
-        return None
+        label = name_label(proj, clip)
+        # Extras off but a name is required on screen: just the label.
+        return {"pre": 0.0, "post": 0.0, "teaser": None, "banner": label, "callouts": []} if label else None
     start, end = float(clip["start"]), float(clip["end"])
     dur = end - start
     max_len = float(proj.get("length", {}).get("max", 60))
@@ -239,7 +294,7 @@ def extras_plan(proj: dict, clip: dict) -> dict | None:
                     teaser_text="WAIT FOR IT...")
     # End card: the video's thumbnail and where to find the full video.
     thumb = proj.get("thumbnail")
-    if thumb and (Path(proj["_folder"]) / thumb).exists():
+    if thumb and proj.get("extras_end_card", True) and (Path(proj["_folder"]) / thumb).exists():
         uploader = proj["video"].get("uploader") or ""
         title = proj["video"]["title"]
         plan.update(post=END_CARD_LEN, thumb=str(Path(proj["_folder"]) / thumb),
@@ -248,7 +303,7 @@ def extras_plan(proj: dict, clip: dict) -> dict | None:
         plan.update(post=0.0)
     if dur + plan["pre"] + plan["post"] > max_len + 0.01:
         plan.update(pre=0.0, teaser=None)
-    plan["banner"] = clip.get("context") or ""
+    plan["banner"] = name_label(proj, clip) or clip.get("context") or ""
     plan["callouts"] = [(float(t) - start, txt) for t, txt in clip.get("callouts", [])
                         if start + 3.2 <= float(t) <= end - 0.8]
     return plan
@@ -310,7 +365,8 @@ def write_reports(proj: dict) -> None:
             "duration": round(c["end"] - c["start"], 1),
             "hook_text": c.get("hook_text", ""), "title": c.get("title", ""), "reason": c.get("reason", ""),
             "voiceover": bool(c.get("voiceover")), "intro_line": c.get("intro_line", ""),
-            "layout": c.get("layout_used", ""), "facecam": c.get("facecam_box") or None,
+            "post_caption": c.get("post_caption", ""),
+            "layout": c.get("layout_used", ""), "facecam": c.get("facecam_used") or c.get("facecam_box") or None,
             "extras": extras_on(proj, c), "context": c.get("context", ""), "callouts": c.get("callouts", []),
             "source_link": _link_at(v["url"], c["start"]),
             **({"claude_suggested": [fmt_precise(x) for x in c["suggested"]]} if c.get("suggested") else {}),
@@ -334,6 +390,8 @@ def write_reports(proj: dict) -> None:
                   f"    Link:   {r['source_link']}"]
         if r["layout"]:
             lines.append(f"    Layout: {r['layout']}" + (f" ({facecam.describe(r['facecam'])})" if r["facecam"] else ""))
+        if r["post_caption"]:
+            lines.append(f"    Post:   {r['post_caption']}")
         if r["voiceover"]:
             lines.append(f"    Intro:  {r['intro_line']}")
         lines.append("")

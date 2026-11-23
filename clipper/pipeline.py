@@ -26,6 +26,8 @@ class JobConfig:
     max_clips: int = 20
     claude_model: str = ""
     extras: bool = False         # teaser, context banner, callouts, end card
+    end_card: bool = True        # thumbnail end card as part of the extras
+    overlay_name: str = ""       # name that must appear on screen in every clip
 
 
 def _save_thumbnail(info: dict, folder: Path, rep: Reporter) -> str | None:
@@ -120,7 +122,7 @@ def run_job(cfg: JobConfig, rep: Reporter) -> Path:
     rank_length = length
     if cfg.extras:
         # Leave room for the teaser and end card so the finished clip still fits the limit.
-        room = project.TEASER_LEN + project.END_CARD_LEN
+        room = project.TEASER_LEN + (project.END_CARD_LEN if cfg.end_card else 0.0)
         if length["max"] - room >= length["min"] + 5:
             rank_length = dict(length, max=length["max"] - room, target=min(length["target"], length["max"] - room))
     clips = rank.rank(title=title, transcript=tr, signals=sig, profile=profile, length=rank_length,
@@ -140,6 +142,7 @@ def run_job(cfg: JobConfig, rep: Reporter) -> Path:
         "profile_id": profile.get("_id"), "rules": cfg.rules, "length": length,
         "signals": {"loudness": sig["loudness"], "chat": sig["chat"]},
         "source_path": None, "clips": [], "extras": bool(cfg.extras), "thumbnail": thumb_name,
+        "extras_end_card": bool(cfg.end_card), "overlay_name": cfg.overlay_name.strip(),
         "_folder": str(folder),
     }
     for c in clips:
