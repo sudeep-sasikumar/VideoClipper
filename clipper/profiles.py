@@ -20,7 +20,7 @@ FALLBACK = {
     "whisper_model": "small",
     "language": None,
     "vad_filter": False,
-    "layout": {"mode": "blur", "facecam": {"x": 0.0, "y": 0.0, "w": 0.3, "h": 0.3},
+    "layout": {"mode": "auto", "facecam": {"x": 0.0, "y": 0.0, "w": 0.3, "h": 0.3},
                "split_top_ratio": 0.38, "foreground_zoom": 1.0},
     "captions": {"enabled": True, "font": "Arial Black", "size": 84, "color": "#FFFFFF",
                  "highlight": "#FFE21A", "outline": "#000000", "outline_width": 7, "shadow": 2,

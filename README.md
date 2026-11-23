@@ -84,7 +84,7 @@ still be installed (step 1).
 | Transcribe | faster-whisper with word timestamps, fed 10 minutes at a time (cut at quiet moments) so memory stays under ~1 GB even for 4 h. It uses an NVIDIA GPU (CUDA) if present, otherwise CPU int8. On a 4-core laptop CPU, `small` runs about 3.5–4x real time (a 1 h 52 m stream took 30 min), so a 4 h VOD takes about 1–1.2 h. An interrupted transcription resumes from the last finished piece. |
 | Signals | Loudness spikes from the audio; message-rate spikes from chat. |
 | Rank | The transcript goes to Claude in 1-hour parts, with the signals, profile criteria and campaign rules, through `claude -p --output-format json`. Claude returns 6 candidates per hour, and at least 6 for videos shorter than an hour (JSON is validated, with one retry if malformed). Candidates are merged and de-duplicated, and the top 20 are kept. Parts with little or no speech are ranked from the loudness spikes, a 30-second loudness timeline and the chat spikes; parts with no speech and no spikes are skipped. Claude runs with no tools and no MCP connectors. |
-| Render | ffmpeg renders 1080x1920 at 30 fps: blurred background fill or facecam-on-top split, ASS word-by-word captions, a hook for the first 3 s, and zoom punch-ins on loudness spikes. |
+| Render | ffmpeg renders 1080x1920 at 30 fps: facecam-on-top split when a streamer's facecam is found in the clip (detected automatically), otherwise a blurred background fill, ASS word-by-word captions, a hook for the first 3 s, and zoom punch-ins on loudness spikes. |
 | Voiceover | Optional per profile. Claude writes an intro line, Kokoro speaks it locally, and the original audio ducks underneath. |
 | Clean up | Temp files are deleted after success. |
 
@@ -103,14 +103,23 @@ you leave out falls back to `gaming.json`.
 | `candidates_per_hour` | Candidates requested per hour of video (default 6, so a 4 h VOD can fill the top 20) |
 | `clip_length` | `min` / `max` / `target` seconds |
 | `whisper_model`, `vad_filter`, `language` | Transcription. VAD is faster but can miss shouted speech over game audio |
-| `layout.mode` | `blur` (blurred fill) or `split` (facecam on top, gameplay below) |
-| `layout.facecam` | Facecam box as fractions of the frame: `x, y, w, h` (e.g. top-left 30 %: `0,0,0.3,0.3`) |
+| `layout.mode` | `auto` (find the facecam in each clip: split if found, blurred fill if not), `split` (always split; uses the detected facecam, or `layout.facecam` if none is found) or `blur` (blurred fill) |
+| `layout.facecam` | Fallback facecam box for `split` when detection finds none, as fractions of the frame: `x, y, w, h` (e.g. top-left 30 %: `0,0,0.3,0.3`) |
 | `layout.split_top_ratio` | Height share of the facecam panel in split mode |
 | `layout.foreground_zoom` | >1 crops the sides of the foreground in blur mode (good for talking heads) |
 | `captions` | Font, size, colors, highlight color, uppercase, words per line, vertical position |
 | `hook` | On-screen hook style and duration |
 | `zoom` | Punch-in amount, max punches per clip, length |
 | `voiceover` | `enabled`, `voice` (e.g. `af_heart`, `am_michael`, `bf_emma`, `bm_george`), `speed`, `duck` |
+
+## Facecam detection
+
+With `layout.mode` set to `auto` (Gaming and Streamer profiles), each clip is checked for a
+streamer facecam: a face that stays in the same spot through the clip, inside an overlay box.
+If one is found, the clip uses the split layout with that box on top; if not (no facecam, a cam too
+dark or tiny to detect, or a compilation that cuts between streamers mid-clip), it uses the
+blurred background. The face detector (YuNet, 230 KB) downloads to `%APPDATA%\Clipper\models` on first
+use. `report.txt` lists the layout and facecam position for every clip.
 
 ## Campaign rules
 
@@ -124,6 +133,7 @@ Select a clip in the results list to:
 - **Play** it in your default player (or double-click it)
 - edit **start/end** (H:MM:SS.ss in the source), **hook text**, and **captions** (one row per caption
   line; keep the word count of a row to keep exact timing)
+- pick the **layout**: Auto, Facecam split or Blurred background (the panel shows where the facecam was found)
 - toggle the **voiceover** and edit its intro line
 - **Save & re-render** that one clip
 - **Delete** it

@@ -9,7 +9,7 @@
   "language": null,
   "vad_filter": false,
   "layout": {
-    "mode": "blur",
+    "mode": "auto",
     "facecam": {"x": 0.0, "y": 0.0, "w": 0.3, "h": 0.3},
     "split_top_ratio": 0.38,
     "foreground_zoom": 1.0

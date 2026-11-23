@@ -99,6 +99,20 @@ def build_filtergraph(layout: dict, punches: list[float], zoom: dict, *, src_w: 
     return ";\n".join(g)
 
 
+def text_positions(profile: dict, layout: dict) -> tuple[dict, dict]:
+    """Caption and hook styles with positions that suit the layout.
+
+    Split layout: the hook sits on the seam between facecam and gameplay (never over the face) and
+    captions sit in the gameplay half. Profiles can override with "split_position_y".
+    """
+    cap, hook = dict(profile["captions"]), dict(profile["hook"])
+    if layout.get("mode") == "split":
+        seam = float(layout.get("split_top_ratio", 0.38))
+        hook["position_y"] = float(hook.get("split_position_y", seam))
+        cap["position_y"] = float(cap.get("split_position_y", max(seam + 0.25, 0.66)))
+    return cap, hook
+
+
 def probe_size(path: Path) -> tuple[int, int]:
     r = run([find_ffmpeg("ffprobe"), "-v", "error", "-select_streams", "v:0", "-show_entries",
              "stream=width,height", "-of", "json", str(path)])
@@ -111,7 +125,7 @@ def probe_size(path: Path) -> tuple[int, int]:
 
 def render_clip(*, source: Path, source_offset: float, clip: dict, words: list[list], profile: dict,
                 loudness: list[dict], out_path: Path, work: Path, rep: Reporter,
-                voiceover_wav: Path | None = None, vo_dur: float = 0.0) -> Path:
+                voiceover_wav: Path | None = None, vo_dur: float = 0.0, layout: dict | None = None) -> Path:
     """Render clip["start"]..clip["end"] (absolute source seconds) to out_path.
 
     source_offset: the absolute time that `source` starts at (0 for the full video, or the start
@@ -131,15 +145,16 @@ def render_clip(*, source: Path, source_offset: float, clip: dict, words: list[l
     lines = clip.get("captions") or captions.build_lines(
         words, start, end, int(profile["captions"].get("words_per_line", 3)))
     clip["captions"] = lines
+    layout = layout or profile["layout"]
+    cap_style, hook_style = text_positions(profile, layout)
     captions.write_ass(work / "captions.ass", lines=lines, clip_start=start, clip_end=end,
-                       cap_style=profile["captions"], hook_text=clip.get("hook_text", ""),
-                       hook_style=profile["hook"])
+                       cap_style=cap_style, hook_text=clip.get("hook_text", ""), hook_style=hook_style)
 
     punches = pick_punches(loudness, start, end, profile.get("zoom", {}))
     src_w, src_h = probe_size(source)
     audio = has_audio(source)
     vo = voiceover_wav is not None and voiceover_wav.exists() and clip.get("voiceover", False)
-    graph = build_filtergraph(profile["layout"], punches, profile.get("zoom", {}), src_w=src_w, src_h=src_h,
+    graph = build_filtergraph(layout, punches, profile.get("zoom", {}), src_w=src_w, src_h=src_h,
                               vo=vo, vo_dur=vo_dur, vo_cfg=profile.get("voiceover", {}), audio=audio)
     (work / "graph.txt").write_text(graph, encoding="utf-8")
 

@@ -10,3 +10,5 @@ _temp/
 *.webm
 *.wav
 .claude/
+dist_new/
+build_new/

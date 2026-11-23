@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QProgressBar, QPushButton, QSplitter, QVBoxLayout, QWidget,
 )
 
-from .. import __version__, profiles, project
+from .. import __version__, facecam, profiles, project
 from ..errors import Cancelled, ClipperError
 from ..events import Reporter
 from ..paths import USER_PROFILES_DIR, BUNDLED_PROFILES_DIR, load_settings, save_settings
@@ -211,6 +211,9 @@ class MainWindow(QMainWindow):
         self.e_start.setToolTip("H:MM:SS.ss in the source video")
         self.e_end.setToolTip("H:MM:SS.ss in the source video")
         self.e_hook = QLineEdit()
+        self.e_layout = QComboBox()
+        self.e_layout.setToolTip("Auto finds the streamer's facecam and puts it on top; if there is none, "
+                                 "the clip uses a blurred background.")
         self.e_vo = QCheckBox("Voiceover intro")
         self.e_intro = QLineEdit()
         self.e_caps = QPlainTextEdit()
@@ -220,6 +223,7 @@ class MainWindow(QMainWindow):
         f.addRow("Start", self.e_start)
         f.addRow("End", self.e_end)
         f.addRow("Hook text", self.e_hook)
+        f.addRow("Layout", self.e_layout)
         f.addRow(self.e_vo)
         f.addRow("Intro line", self.e_intro)
         ev.addLayout(f)
@@ -397,7 +401,7 @@ class MainWindow(QMainWindow):
         return next((c for c in self.proj["clips"] if c["rank"] == rank), None)
 
     def _set_editor_enabled(self, on: bool):
-        for w in (self.e_start, self.e_end, self.e_hook, self.e_vo, self.e_intro, self.e_caps,
+        for w in (self.e_start, self.e_end, self.e_hook, self.e_layout, self.e_vo, self.e_intro, self.e_caps,
                   self.b_play, self.b_render, self.b_delete):
             w.setEnabled(on)
         if not on:
@@ -412,12 +416,23 @@ class MainWindow(QMainWindow):
         self._busy(self.thread is not None)
         info = f"<b>#{c['rank']:02d} · score {c['score']:.0f}/10</b> · {c.get('file') or 'not rendered'}<br>" \
                f"<i>{c.get('reason', '')}</i>"
+        if c.get("layout_used"):
+            box = c.get("facecam_box") or None
+            info += f"<br>Layout: {c['layout_used']}" + (f" · {facecam.describe(box)}" if box else
+                                                         " · no facecam found" if "facecam_box" in c else "")
         if c.get("error"):
             info += f"<br><span style='color:#c33'>Render failed: {c['error']}</span>"
         self.e_info.setText(info)
         self.e_start.setText(fmt_precise(c["start"]))
         self.e_end.setText(fmt_precise(c["end"]))
         self.e_hook.setText(c.get("hook_text", ""))
+        self.e_layout.blockSignals(True)
+        self.e_layout.clear()
+        self.e_layout.addItem(f"Profile default ({self.proj['profile']['layout'].get('mode', 'blur')})", "")
+        for key, label in project.LAYOUTS.items():
+            self.e_layout.addItem(label, key)
+        self.e_layout.setCurrentIndex(max(0, self.e_layout.findData(c.get("layout", ""))))
+        self.e_layout.blockSignals(False)
         self.e_vo.setChecked(bool(c.get("voiceover")))
         self.e_intro.setText(c.get("intro_line", ""))
         lines = c.get("captions") or []
@@ -444,7 +459,10 @@ class MainWindow(QMainWindow):
         caps_changed = self.e_caps.toPlainText() != self._caps_original
         try:
             project.edit_clip(self.proj, c, start=s, end=e, hook_text=self.e_hook.text(),
-                              voiceover_on=self.e_vo.isChecked(), intro_line=self.e_intro.text())
+                              voiceover_on=self.e_vo.isChecked(), intro_line=self.e_intro.text(),
+                              layout=self.e_layout.currentData() or None)
+            if not self.e_layout.currentData():
+                c.pop("layout", None)  # back to the profile's default
             if caps_changed and (abs(s - c["start"]) < 0.01 and abs(e - c["end"]) < 0.01):
                 project.edit_clip(self.proj, c, caption_lines=self.e_caps.toPlainText().splitlines())
         except ClipperError as err:

@@ -55,6 +55,26 @@ def load_wav_float(path: Path, start: float = 0.0, end: float | None = None):
     return out[:pos]
 
 
+def free_ram_gb() -> float:
+    """Available physical memory in GB (Windows), or 0 if unknown."""
+    try:
+        import ctypes
+
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        st = MEMORYSTATUSEX()
+        st.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+            return st.ullAvailPhys / 1e9
+    except Exception:
+        pass
+    return 0.0
+
+
 def pick_device() -> tuple[str, str]:
     try:
         import ctranslate2
@@ -114,6 +134,11 @@ def transcribe(audio: Path, out_json: Path, duration: float, model_name: str, re
         except ValueError:
             pass
 
+    need = {"tiny": 0.6, "base": 0.8, "small": 1.3, "medium": 2.6}.get(model_name, 3.5)
+    free = free_ram_gb()
+    if 0 < free < need:
+        rep.log(f"Warning: only {free:.1f} GB of RAM is free; Whisper '{model_name}' needs about {need:.1f} GB. "
+                "Close browsers or other programs, or pick a smaller model in Settings, if it fails.")
     model, device = load_model(model_name, rep)
     rep.log("Transcribing (this is the slow part)...")
     t0 = time.monotonic()
@@ -177,9 +202,13 @@ def transcribe(audio: Path, out_json: Path, duration: float, model_name: str, re
                     rate = max(pos - resumed_s, 1.0) / el          # audio seconds per wall second
                     left = (duration - pos) / rate
                     rep.log(f"Transcribed {_hms(a + seg.end)} of {_hms(duration)} (about {_hms(left)} left).")
-        except MemoryError as e:
-            raise ClipperError("Ran out of memory while transcribing.",
-                               "Close other programs, or pick a smaller Whisper model in Settings.") from e
+        except (MemoryError, RuntimeError) as e:
+            if isinstance(e, RuntimeError) and "alloc" not in str(e).lower() and "memory" not in str(e).lower():
+                raise
+            raise ClipperError(
+                f"Ran out of memory while transcribing ({free_ram_gb():.1f} GB of RAM free).",
+                "Close browsers and other programs, or pick a smaller Whisper model in Settings "
+                "(base uses about half the memory of small). Start again to resume where it stopped.") from e
         if lang is None and info.language_probability >= 0.5:
             lang, lang_prob = info.language, info.language_probability  # keep it for later pieces
             rep.log(f"Language: {lang} ({lang_prob:.0%}).")

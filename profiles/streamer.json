@@ -8,7 +8,7 @@
   "language": null,
   "vad_filter": false,
   "layout": {
-    "mode": "split",
+    "mode": "auto",
     "facecam": {"x": 0.0, "y": 0.0, "w": 0.28, "h": 0.32},
     "split_top_ratio": 0.38,
     "foreground_zoom": 1.0
@@ -24,7 +24,7 @@
     "shadow": 2,
     "uppercase": true,
     "words_per_line": 3,
-    "position_y": 0.47
+    "position_y": 0.72
   },
   "hook": {
     "enabled": true,
@@ -33,7 +33,7 @@
     "color": "#FFFFFF",
     "box": "#9146FF",
     "duration": 3.0,
-    "position_y": 0.06
+    "position_y": 0.14
   },
   "zoom": {"enabled": true, "amount": 0.07, "max_punches": 6, "length": 0.7},
   "voiceover": {"enabled": false, "voice": "am_adam", "speed": 1.05, "volume": 1.0, "duck": 0.35}

@@ -246,10 +246,15 @@ def parse_chat(path: Path) -> list[float]:
 
 # ---------------------------------------------------------- section download
 
-def download_section(url: str, start: float, end: float, dest_dir: Path, rep: Reporter) -> Path:
-    """Fetch only [start, end] of a video (used to re-render after the source was deleted)."""
+def download_section(url: str, start: float, end: float, dest_dir: Path, rep: Reporter,
+                     precise: bool = True) -> Path:
+    """Fetch only [start, end] of a video (used to re-render after the source was deleted).
+
+    precise=True re-encodes at the cut points (exact start); False copies from the nearest
+    keyframe, which is more robust when the precise mode produces a short stream.
+    """
     dest_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"section_{int(start)}_{int(end)}"
+    stem = f"section_{int(start)}_{int(end)}" + ("" if precise else "_k")
     for p in dest_dir.glob(stem + ".*"):
         if p.suffix.lower() in (".mp4", ".mkv", ".webm"):
             return p
@@ -258,7 +263,7 @@ def download_section(url: str, start: float, end: float, dest_dir: Path, rep: Re
         "merge_output_format": "mp4",
         "outtmpl": str(dest_dir / (stem + ".%(ext)s")),
         "download_ranges": download_range_func(None, [(max(0.0, start), end)]),
-        "force_keyframes_at_cuts": True,
+        "force_keyframes_at_cuts": precise,
     }
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
