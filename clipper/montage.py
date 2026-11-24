@@ -131,6 +131,23 @@ def plan_cuts(spec: dict) -> list[tuple[float, float]]:
     return out
 
 
+def _fill_filter(info: dict, band: tuple[float, float], speed: float, zoom: float, frames: int, grade: str,
+                 cx: float, cy: float) -> str:
+    """Full-screen 9:16: crop a vertical window out of the (wide) source, centred at (cx, cy) of the band."""
+    bw = info["w"]
+    by, bh = info["h"] * band[0], info["h"] * (band[1] - band[0])
+    ch = bh / zoom
+    cw = ch * 9 / 16
+    if cw > bw:                     # very tall source: limit by width instead
+        cw, ch = bw / zoom, bw / zoom * 16 / 9
+    cw, ch = int(cw) // 2 * 2, int(ch) // 2 * 2
+    x = int(min(max(cx * bw - cw / 2, 0), bw - cw))
+    y = int(min(max(by + cy * bh - ch / 2, by), by + bh - ch))
+    sharpen = ",unsharp=5:5:0.6:3:3:0.0" if cw < 900 else ""
+    return (f"[0:v]crop={cw}:{ch}:{x}:{y},setpts=(PTS-STARTPTS)/{speed:.4f},fps={FPS},"
+            f"scale={W}:{H}:flags=lanczos,setsar=1{sharpen}{grade},trim=end_frame={frames},format=yuv420p[v]")
+
+
 def _shot_filter(info: dict, band: tuple[float, float], speed: float, zoom: float, frames: int,
                  grade: str) -> str:
     y0, y1 = band
@@ -195,9 +212,13 @@ def render(spec: dict, out_dir: Path, work: Path, preview_audio: Path | None = N
             band = trim_black(src, band, at, at + need - 0.4)
         s["_band"] = [round(band[0], 4), round(band[1], 4)]
         seg = work / f"seg_{i:02d}.mp4"
+        if s.get("mode", spec.get("mode", "band")) == "fill":
+            fg = _fill_filter(info, band, speed, float(s.get("zoom", 1.0)), frames, s.get("grade", grade),
+                              float(s.get("cx", 0.5)), float(s.get("cy", 0.5)))
+        else:
+            fg = _shot_filter(info, band, speed, float(s.get("zoom", 1.0)), frames, s.get("grade", grade))
         _run([F, "-v", "error", "-y", "-ss", f"{at:.3f}", "-t", f"{need:.3f}", "-i", str(src),
-              "-filter_complex", _shot_filter(info, band, speed, float(s.get("zoom", 1.0)), frames,
-                                              s.get("grade", grade)),
+              "-filter_complex", fg,
               "-map", "[v]", "-frames:v", str(frames), "-r", str(FPS), "-c:v", "libx264", "-preset", "veryfast", "-threads", "2",
               "-crf", "12", "-pix_fmt", "yuv420p", "-an", str(seg)])
         seg_paths.append(seg)
@@ -208,20 +229,20 @@ def render(spec: dict, out_dir: Path, work: Path, preview_audio: Path | None = N
 
     length = cuts[-1][1]
     drop = float(spec["drop"])
-    # Zoom punches: big on the drop, small on every Nth cut after it.
-    punches = [(drop, 0.16, 0.45)]
-    every = int(spec.get("punch_every", 2))
-    for n, (a, _) in enumerate(cuts):
-        if a > drop + 0.05 and every and n % every == 0:
-            punches.append((a, 0.05, 0.3))
-    for t in spec.get("extra_punches", []):
-        punches.append((float(t), 0.10, 0.35))
-    g = [f"[0:v]zoompan=z='{_zoom_expr(punches)}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps={FPS}[z]",
-         f"[z]rgbashift=rh=14:bh=-14:enable='between(t,{drop:.3f},{drop + 0.2:.3f})'[r]",
-         f"color=white:s={W}x{H}:r={FPS}:d=0.3,format=rgba,fade=t=out:st=0:d=0.3:alpha=1,"
-         f"setpts=PTS+{drop:.3f}/TB[fl]",
-         "[r][fl]overlay=eof_action=pass[f]"]
-    cur = "f"
+    g, cur = [], "0:v"
+    if spec.get("drop_fx", False):
+        # Zoom punches: big on the drop, small on every Nth cut after it; flash and colour split on the drop.
+        punches = [(drop, 0.16, 0.45)]
+        every = int(spec.get("punch_every", 2))
+        for n, (a, _) in enumerate(cuts):
+            if a > drop + 0.05 and every and n % every == 0:
+                punches.append((a, 0.05, 0.3))
+        g = [f"[0:v]zoompan=z='{_zoom_expr(punches)}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps={FPS}[z]",
+             f"[z]rgbashift=rh=14:bh=-14:enable='between(t,{drop:.3f},{drop + 0.2:.3f})'[r]",
+             f"color=white:s={W}x{H}:r={FPS}:d=0.3,format=rgba,fade=t=out:st=0:d=0.3:alpha=1,"
+             f"setpts=PTS+{drop:.3f}/TB[fl]",
+             "[r][fl]overlay=eof_action=pass[f]"]
+        cur = "f"
     if spec.get("text"):
         (work / "text.ass").write_text(_ass(spec["text"], float(spec.get("text_until", 2.1)),
                                             int(spec.get("text_size", 78)), float(spec.get("text_y", 0.16))),
@@ -236,6 +257,26 @@ def render(spec: dict, out_dir: Path, work: Path, preview_audio: Path | None = N
           "-c:v", "libx264", "-preset", "medium", "-threads", "3", "-crf", "17", "-profile:v", "high", "-pix_fmt", "yuv420p",
           "-r", str(FPS), "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(post.resolve())], cwd=work)
     res = {"post": post, "length": length, "cuts": cuts}
+    # Platform copies: the same cut with its head trimmed so the drop lands where that app's sound has it.
+    for v in spec.get("variants", []):
+        vp = out_dir / f"{name}{v['suffix']}.mp4"
+        skip = int(round(float(v.get("trim", 0)) * FPS))
+        if skip:
+            _run([F, "-v", "error", "-y", "-i", str(post), "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+                  "-filter_complex", f"[0:v]trim=start_frame={skip},setpts=PTS-STARTPTS[v]", "-map", "[v]",
+                  "-map", "1:a", "-t", f"{length - skip / FPS:.3f}", "-c:v", "libx264", "-preset", "medium",
+                  "-threads", "3", "-crf", "17", "-profile:v", "high", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                  "-b:a", "128k", "-movflags", "+faststart", str(vp)])
+        else:
+            shutil.copy2(post, vp)
+        res.setdefault("variants", []).append(vp)
+        if v.get("audio"):
+            prev = out_dir / "preview_with_song" / f"{name}{v['suffix']}_PREVIEW.mp4"
+            prev.parent.mkdir(exist_ok=True)
+            _run([F, "-v", "error", "-y", "-i", str(vp), "-i", str(v["audio"]), "-map", "0:v", "-map", "1:a",
+                  "-shortest", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(prev)])
+    if spec.get("variants"):
+        post.unlink()                      # the platform copies replace the master
     if preview_audio:
         prev = out_dir / "preview_with_song" / f"{name}_PREVIEW.mp4"
         prev.parent.mkdir(exist_ok=True)
