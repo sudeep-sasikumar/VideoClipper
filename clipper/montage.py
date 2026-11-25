@@ -148,6 +148,47 @@ def _fill_filter(info: dict, band: tuple[float, float], speed: float, zoom: floa
             f"scale={W}:{H}:flags=lanczos,setsar=1{sharpen}{grade},trim=end_frame={frames},format=yuv420p[v]")
 
 
+SPLIT_GAP = 8                       # white divider between the two halves of a split-screen shot
+LABEL_FONT = "C\\:/Windows/Fonts/arialbd.ttf"
+
+
+def _half_filter(idx: int, info: dict, half: dict, speed: float, frames: int, grade: str, out_h: int,
+                 tag: str) -> str:
+    """One half of a split-screen shot: a W x out_h window cropped out of the source at (cx, cy)."""
+    band = half.get("band") or [0.0, 1.0]
+    zoom = float(half.get("zoom", 1.0))
+    bw = info["w"]
+    by, bh = info["h"] * band[0], info["h"] * (band[1] - band[0])
+    ch = bh / zoom
+    cw = ch * W / out_h
+    if cw > bw:
+        cw, ch = bw / zoom, bw / zoom * out_h / W
+    cw, ch = int(cw) // 2 * 2, int(ch) // 2 * 2
+    cx, cy = float(half.get("cx", 0.5)), float(half.get("cy", 0.5))
+    x = int(min(max(cx * bw - cw / 2, 0), bw - cw))
+    y = int(min(max(by + cy * bh - ch / 2, by), by + bh - ch))
+    sharpen = ",unsharp=5:5:0.5:3:3:0.0" if cw < 900 else ""
+    sp = float(half.get("speed", speed))
+    label = ""
+    if half.get("label"):
+        txt = str(half["label"]).replace("'", "").replace(":", "\\:")
+        label = (f",drawtext=fontfile='{LABEL_FONT}':text='{txt}':fontsize=54:fontcolor=white:"
+                 f"x=40:y=h-th-40:box=1:boxcolor=black@0.55:boxborderw=14")
+    return (f"[{idx}:v]crop={cw}:{ch}:{x}:{y},setpts=(PTS-STARTPTS)/{sp:.4f},fps={FPS},"
+            f"scale={W}:{out_h}:flags=lanczos,setsar=1{sharpen}{half.get('grade', grade)}{label},"
+            f"trim=end_frame={frames}[{tag}]")
+
+
+def _split_filter(infos: list[dict], shot: dict, speed: float, frames: int, grade: str) -> str:
+    """Two sources stacked: `top` above a thin white divider, `bottom` below."""
+    hh = (H - SPLIT_GAP) // 2
+    return ";".join([
+        _half_filter(0, infos[0], shot["top"], speed, frames, grade, hh, "t"),
+        _half_filter(1, infos[1], shot["bottom"], speed, frames, grade, H - SPLIT_GAP - hh, "b"),
+        f"color=c=white:s={W}x{SPLIT_GAP}:r={FPS},trim=end_frame={frames}[d]",
+        "[t][d][b]vstack=inputs=3:shortest=1,format=yuv420p[v]"])
+
+
 def _shot_filter(info: dict, band: tuple[float, float], speed: float, zoom: float, frames: int,
                  grade: str) -> str:
     y0, y1 = band
@@ -198,10 +239,30 @@ def render(spec: dict, out_dir: Path, work: Path, preview_audio: Path | None = N
     grade = spec.get("grade", "")
     seg_paths = []
     for i, (s, (a, b)) in enumerate(zip(spec["shots"], cuts)):
-        src = Path(s["src"])
-        info = probe(src)
         frames = int(round((b - a) * FPS))
         speed = float(s.get("speed", 1.0))
+        if s.get("mode", spec.get("mode", "band")) == "split":
+            inputs, infos = [], []
+            for side in ("top", "bottom"):
+                h = s[side]
+                p, at = Path(h["src"]), float(h.get("at", 0.0))
+                info = probe(p)
+                need = frames / FPS * float(h.get("speed", speed)) + 0.4
+                if at + need - 0.4 > info["duration"] + 0.05:
+                    raise ValueError(f"shot {i + 1} {side} ({p.name}) needs {need - 0.4:.2f}s from {at:.2f}s "
+                                     f"but the clip is {info['duration']:.2f}s")
+                inputs += ["-ss", f"{at:.3f}", "-t", f"{need:.3f}", "-i", str(p)]
+                infos.append(info)
+            seg = work / f"seg_{i:02d}.mp4"
+            _run([F, "-v", "error", "-y", *inputs, "-filter_complex", _split_filter(infos, s, speed, frames, grade),
+                  "-map", "[v]", "-frames:v", str(frames), "-r", str(FPS), "-c:v", "libx264", "-preset", "veryfast",
+                  "-threads", "2", "-crf", "12", "-pix_fmt", "yuv420p", "-an", str(seg)])
+            seg_paths.append(seg)
+            log(f"  shot {i + 1:2d} {a:6.2f}-{b:6.2f}s  split {Path(s['top']['src']).name}@{s['top'].get('at', 0)} / "
+                f"{Path(s['bottom']['src']).name}@{s['bottom'].get('at', 0)}")
+            continue
+        src = Path(s["src"])
+        info = probe(src)
         need = frames / FPS * speed + 0.4
         at = float(s.get("at", 0.0))
         if at + need - 0.4 > info["duration"] + 0.05:
